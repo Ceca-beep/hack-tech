@@ -3,7 +3,7 @@ import { useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { useStore } from '../../store'
 
-export default function RoutePolyline() {
+export default function RoutePolyline({ clientRoute }) {
   const map = useMap()
   const { route, navGraph, currentStepIndex } = useStore()
   const routeLayerRef = useRef(null)
@@ -14,21 +14,26 @@ export default function RoutePolyline() {
     routeLayerRef.current?.remove()
     activeLayerRef.current?.remove()
 
-    if (!route?.node_sequence || !navGraph?.nodes?.length) return
+    if (!route) return
 
-    // Build a lookup of node positions by id
-    const nodeMap = {}
-    for (const n of navGraph.nodes) {
-      nodeMap[n.id] = n
+    let coords
+
+    // If we have client-side coords (from client-side A*), use them directly
+    if (clientRoute?.length >= 2) {
+      coords = clientRoute.map((n) => [n.y_m, n.x_m])
+    } else if (route.node_sequence?.length >= 2 && navGraph?.nodes?.length) {
+      // Server-side route — look up node positions from nav graph
+      const nodeMap = {}
+      for (const n of navGraph.nodes) {
+        nodeMap[n.id] = n
+      }
+      coords = route.node_sequence
+        .map((nid) => nodeMap[nid])
+        .filter(Boolean)
+        .map((n) => [n.y_m, n.x_m])
     }
 
-    // Convert node_sequence to [lat, lng] = [y_m, x_m] coords
-    const coords = route.node_sequence
-      .map((nid) => nodeMap[nid])
-      .filter(Boolean)
-      .map((n) => [n.y_m, n.x_m])
-
-    if (coords.length < 2) return
+    if (!coords || coords.length < 2) return
 
     // Full route line (subtle background)
     routeLayerRef.current = L.polyline(coords, {
@@ -56,7 +61,7 @@ export default function RoutePolyline() {
       routeLayerRef.current?.remove()
       activeLayerRef.current?.remove()
     }
-  }, [route, navGraph, currentStepIndex, map])
+  }, [route, navGraph, currentStepIndex, map, clientRoute])
 
   return null
 }

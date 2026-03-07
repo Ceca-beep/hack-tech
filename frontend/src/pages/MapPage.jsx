@@ -1,14 +1,384 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Html5Qrcode } from 'html5-qrcode'
 import { useStore } from '../store'
 import {
   getAirports, getAirportPOIs, getNavGraph, getRoute,
   createSession,
 } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { useIMU } from '../hooks/useIMU'
 import FloorMap from '../components/Map/FloorMap'
 import InstructionBanner from '../components/Navigation/InstructionBanner'
 import BottomNav from '../components/BottomNav'
+
+// ── Line-segment intersection test (handles collinear overlap) ───
+function segmentsIntersect(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) {
+  const dx1 = ax2 - ax1, dy1 = ay2 - ay1
+  const dx2 = bx2 - bx1, dy2 = by2 - by1
+  const denom = dx1 * dy2 - dy1 * dx2
+
+  if (Math.abs(denom) < 1e-10) {
+    // Parallel — check if collinear and overlapping
+    const cross = (bx1 - ax1) * dy1 - (by1 - ay1) * dx1
+    if (Math.abs(cross) > 0.5) return false // parallel but not collinear (0.5m tolerance)
+    // Collinear — project B onto A's axis and check overlap
+    const lenSq = dx1 * dx1 + dy1 * dy1
+    if (lenSq < 1e-10) return false // degenerate segment
+    const t1 = ((bx1 - ax1) * dx1 + (by1 - ay1) * dy1) / lenSq
+    const t2 = ((bx2 - ax1) * dx1 + (by2 - ay1) * dy1) / lenSq
+    const tMin = Math.min(t1, t2), tMax = Math.max(t1, t2)
+    // Overlap if [0,1] and [tMin,tMax] intersect
+    return tMax > 0.01 && tMin < 0.99
+  }
+
+  const t = ((bx1 - ax1) * dy2 - (by1 - ay1) * dx2) / denom
+  const u = ((bx1 - ax1) * dy1 - (by1 - ay1) * dx1) / denom
+  return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999
+}
+
+// Check if a straight line between two points crosses any wall
+function crossesWall(ax, ay, bx, by, walls) {
+  for (const w of walls) {
+    if (segmentsIntersect(ax, ay, bx, by, w.x1, w.y1, w.x2, w.y2)) return true
+  }
+  return false
+}
+
+// ── Binary min-heap for A* priority queue ────────────────────────
+class MinHeap {
+  constructor() { this.d = [] }
+  push(v) { this.d.push(v); this._up(this.d.length - 1) }
+  pop() {
+    const top = this.d[0], last = this.d.pop()
+    if (this.d.length > 0) { this.d[0] = last; this._down(0) }
+    return top
+  }
+  get size() { return this.d.length }
+  _up(i) {
+    while (i > 0) {
+      const p = (i - 1) >> 1
+      if (this.d[p].f <= this.d[i].f) break
+      ;[this.d[p], this.d[i]] = [this.d[i], this.d[p]]
+      i = p
+    }
+  }
+  _down(i) {
+    const n = this.d.length
+    while (true) {
+      let s = i, l = 2 * i + 1, r = 2 * i + 2
+      if (l < n && this.d[l].f < this.d[s].f) s = l
+      if (r < n && this.d[r].f < this.d[s].f) s = r
+      if (s === i) break
+      ;[this.d[s], this.d[i]] = [this.d[i], this.d[s]]
+      i = s
+    }
+  }
+}
+
+// ── Grid-based A* pathfinding (wall-aware) ───────────────────────
+function clientAStar(fromPos, toPoi, pois, airport, walls) {
+  if (!airport) return null
+  const W = airport.width_m, H = airport.height_m
+  const destX = toPoi.x_m, destY = toPoi.y_m
+
+  // No walls — direct line
+  if (!walls || walls.length === 0) {
+    const dist = Math.sqrt((destX - fromPos.x_m) ** 2 + (destY - fromPos.y_m) ** 2)
+    const coords = [
+      { id: '__start__', x_m: fromPos.x_m, y_m: fromPos.y_m },
+      { id: toPoi.poi_id || toPoi.id, x_m: destX, y_m: destY, name: toPoi.name },
+    ]
+    return {
+      node_sequence: coords.map((c) => c.id), edge_sequence: [],
+      total_distance_m: Math.round(dist), total_time_s: Math.round(dist / 1.4),
+      instructions: [{ step_index: 0, instruction_type: 'continue_straight', distance_m: Math.round(dist), display_text: `Head to ${toPoi.name} (${Math.round(dist)}m)`, tts_text: `Head straight for ${Math.round(dist)} metres`, haptic_cue: 'continue_straight' }],
+      _coords: coords,
+    }
+  }
+
+  // Grid resolution: ~80 cells on longer axis (small enough to fit through doors)
+  const maxDim = Math.max(W, H)
+  const STEP = maxDim / 80
+  const cols = Math.ceil(W / STEP)
+  const rows = Math.ceil(H / STEP)
+  // Offset grid origin by a fractional step to avoid collinear alignment with walls
+  const OX = STEP * 0.37, OY = STEP * 0.41
+
+  const toCol = (x) => Math.min(Math.max(Math.round((x - OX) / STEP), 0), cols)
+  const toRow = (y) => Math.min(Math.max(Math.round((y - OY) / STEP), 0), rows)
+  const toWorld = (c, r) => [c * STEP + OX, r * STEP + OY]
+  const key = (c, r) => c * 10000 + r // fast numeric key (works up to 10000 rows)
+
+  const sc = toCol(fromPos.x_m), sr = toRow(fromPos.y_m)
+  const dc = toCol(destX), dr = toRow(destY)
+
+  // 8-directional neighbors
+  const dirs = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]
+  const DIAG = STEP * 1.414
+
+  // Heuristic: octile distance
+  const heuristic = (c, r) => {
+    const dx = Math.abs(c - dc) * STEP
+    const dy = Math.abs(r - dr) * STEP
+    const mn = Math.min(dx, dy), mx = Math.max(dx, dy)
+    return mn * 1.414 + (mx - mn)
+  }
+
+  // A* on grid with binary heap
+  const open = new MinHeap()
+  open.push({ f: heuristic(sc, sr), g: 0, c: sc, r: sr })
+  const gScore = new Map()
+  gScore.set(key(sc, sr), 0)
+  const cameFrom = new Map()
+  const closed = new Set()
+
+  while (open.size > 0) {
+    const { c, r, g } = open.pop()
+    const k = key(c, r)
+
+    if (closed.has(k)) continue
+    closed.add(k)
+
+    if (c === dc && r === dr) {
+      // Reconstruct grid path
+      const gridPath = [[dc, dr]]
+      let cur = key(dc, dr)
+      while (cameFrom.has(cur)) {
+        cur = cameFrom.get(cur)
+        const gc = (cur / 10000) | 0, gr = cur % 10000
+        gridPath.unshift([gc, gr])
+      }
+
+      // Convert to world coordinates
+      const worldPath = gridPath.map(([gc, gr]) => toWorld(gc, gr))
+
+      // Smooth: skip intermediate waypoints that have line-of-sight
+      const smoothed = [worldPath[0]]
+      let i = 0
+      while (i < worldPath.length - 1) {
+        let farthest = i + 1
+        for (let j = i + 2; j < worldPath.length; j++) {
+          if (!crossesWall(worldPath[i][0], worldPath[i][1], worldPath[j][0], worldPath[j][1], walls)) {
+            farthest = j
+          }
+        }
+        smoothed.push(worldPath[farthest])
+        i = farthest
+      }
+
+      // Build route result
+      const coords = smoothed.map(([x, y], idx) => ({ id: `step_${idx}`, x_m: x, y_m: y }))
+      // Replace first/last with exact positions
+      coords[0] = { id: '__start__', x_m: fromPos.x_m, y_m: fromPos.y_m }
+      coords[coords.length - 1] = { id: toPoi.poi_id || toPoi.id, x_m: destX, y_m: destY, name: toPoi.name }
+
+      let totalDist = 0
+      for (let j = 1; j < coords.length; j++) {
+        totalDist += Math.sqrt((coords[j].x_m - coords[j - 1].x_m) ** 2 + (coords[j].y_m - coords[j - 1].y_m) ** 2)
+      }
+
+      const instructions = []
+      for (let j = 0; j < coords.length - 1; j++) {
+        const from = coords[j], to = coords[j + 1]
+        const segDist = Math.sqrt((to.x_m - from.x_m) ** 2 + (to.y_m - from.y_m) ** 2)
+        const via = to.name ? `towards ${to.name}` : 'ahead'
+        instructions.push({
+          step_index: j,
+          instruction_type: 'continue_straight',
+          distance_m: Math.round(segDist),
+          display_text: j === 0 ? `Head ${via} for ${Math.round(segDist)}m` : `Continue ${via} for ${Math.round(segDist)}m`,
+          tts_text: `Continue for ${Math.round(segDist)} metres`,
+          haptic_cue: 'continue_straight',
+        })
+      }
+
+      return {
+        node_sequence: coords.map((c) => c.id), edge_sequence: [],
+        total_distance_m: Math.round(totalDist), total_time_s: Math.round(totalDist / 1.4),
+        instructions, _coords: coords,
+      }
+    }
+
+    // Expand neighbors
+    for (const [dc2, dr2] of dirs) {
+      const nc = c + dc2, nr = r + dr2
+      if (nc < 0 || nc > cols || nr < 0 || nr > rows) continue
+      const nk = key(nc, nr)
+      if (closed.has(nk)) continue
+
+      // Check wall crossing for this grid edge
+      const [x1, y1] = toWorld(c, r)
+      const [x2, y2] = toWorld(nc, nr)
+      if (crossesWall(x1, y1, x2, y2, walls)) continue
+
+      const moveCost = (dc2 !== 0 && dr2 !== 0) ? DIAG : STEP
+      const tentG = g + moveCost
+      if (tentG < (gScore.get(nk) ?? Infinity)) {
+        gScore.set(nk, tentG)
+        cameFrom.set(nk, k)
+        open.push({ f: tentG + heuristic(nc, nr), g: tentG, c: nc, r: nr })
+      }
+    }
+  }
+
+  // No path found — return null (never draw through walls)
+  return null
+}
+
+// ── QR Scanner Modal for position scanning ───────────────────────
+function PositionQRScanner({ onScanned, onClose }) {
+  const readerRef = useRef(null)
+  const [error, setError] = useState(null)
+  const onScanRef = useRef(onScanned)
+  onScanRef.current = onScanned
+
+  useEffect(() => {
+    let stopped = false
+    const container = readerRef.current
+    if (!container) return
+    const scannerId = 'pos-qr-reader-' + Date.now()
+    container.id = scannerId
+    const scanner = new Html5Qrcode(scannerId)
+    let running = false
+
+    scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      (text) => {
+        try {
+          const data = JSON.parse(text)
+          if (data.type === 'skyguide_position' && data.x_m != null && data.y_m != null) {
+            onScanRef.current(data)
+          }
+        } catch {}
+      },
+      () => {}
+    ).then(() => { running = true })
+      .catch(() => { if (!stopped) setError('Camera access denied') })
+
+    return () => {
+      stopped = true
+      if (running) scanner.stop().catch(() => {})
+    }
+  }, [])
+
+  return (
+    <div className="fixed inset-0 z-[2000] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/90" onClick={onClose} />
+      <div className="relative bg-slate-900 rounded-2xl w-full max-w-sm mx-4 p-4 text-center">
+        <button onClick={onClose} className="absolute top-3 right-3 text-slate-400 hover:text-white z-10">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <p className="text-sm font-semibold text-white mb-3">Scan Position QR Code</p>
+        <div ref={readerRef} className="rounded-xl overflow-hidden" style={{ minHeight: 280 }} />
+        {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+        <p className="text-[10px] text-slate-500 mt-3">Point camera at a position QR marker</p>
+      </div>
+    </div>
+  )
+}
+
+// ── Position Selection Modal ─────────────────────────────────────
+// Works in two contexts:
+//  1. Initial entry (no destPoi) — "Where are you?"
+//  2. Before navigation (with destPoi) — "Where are you? We'll navigate to X"
+function PositionModal({ onSetPosition, onClose, onSelectMap, destPoi }) {
+  const [mode, setMode] = useState(null) // null | 'scan'
+
+  if (mode === 'scan') {
+    return (
+      <PositionQRScanner
+        onScanned={(data) => onSetPosition(data.x_m, data.y_m, 'qr_scan')}
+        onClose={() => setMode(null)}
+      />
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-[2000] flex items-end justify-center pb-28">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative bg-slate-800 rounded-2xl w-full max-w-sm mx-4 p-5 border border-slate-700/50 shadow-2xl">
+        <button onClick={onClose} className="absolute top-3 right-3 text-slate-500 hover:text-white">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <p className="text-white font-bold text-base mb-1">Where are you?</p>
+        <p className="text-slate-400 text-xs mb-5">
+          {destPoi
+            ? <>Set your position to navigate to <span className="text-blue-400 font-medium">{destPoi.name}</span>.</>
+            : 'Scan a nearby position QR code or mark your location on the map.'}
+        </p>
+
+        <div className="space-y-2.5">
+          <button
+            onClick={() => setMode('scan')}
+            className="w-full flex items-center gap-3 bg-amber-600/15 hover:bg-amber-600/25 border border-amber-500/30 rounded-xl px-4 py-3 transition-colors"
+          >
+            <div className="w-9 h-9 bg-amber-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+              </svg>
+            </div>
+            <div className="text-left">
+              <p className="text-white text-sm font-medium">Scan Position QR</p>
+              <p className="text-slate-500 text-[11px]">Scan a nearby position marker QR code</p>
+            </div>
+          </button>
+
+          <button
+            onClick={onSelectMap}
+            className="w-full flex items-center gap-3 bg-slate-700/30 hover:bg-slate-700/50 border border-slate-600/30 rounded-xl px-4 py-3 transition-colors"
+          >
+            <div className="w-9 h-9 bg-slate-600/30 rounded-lg flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+            <div className="text-left">
+              <p className="text-white text-sm font-medium">Place on Map</p>
+              <p className="text-slate-500 text-[11px]">Tap the floor plan to mark your location</p>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Long-press hook ──────────────────────────────────────────────
+function useLongPress(onLongPress, onClick, ms = 500) {
+  const timerRef = useRef(null)
+  const pressedRef = useRef(false)
+
+  const start = useCallback(() => {
+    pressedRef.current = false
+    timerRef.current = setTimeout(() => {
+      pressedRef.current = true
+      onLongPress()
+    }, ms)
+  }, [onLongPress, ms])
+
+  const end = useCallback(() => {
+    clearTimeout(timerRef.current)
+    if (!pressedRef.current) onClick()
+  }, [onClick])
+
+  const cancel = useCallback(() => {
+    clearTimeout(timerRef.current)
+  }, [])
+
+  return {
+    onPointerDown: start,
+    onPointerUp: end,
+    onPointerLeave: cancel,
+  }
+}
 
 export default function MapPage() {
   const navigate = useNavigate()
@@ -16,7 +386,7 @@ export default function MapPage() {
     airport, setAirport, setPois, setNavGraph,
     navGraph, pois, session, setSession,
     position, setPosition, setRoute, route,
-    accessProfile,
+    accessProfile, positionConfirmed, setPositionConfirmed,
   } = useStore()
 
   const [loading, setLoading] = useState(true)
@@ -25,6 +395,70 @@ export default function MapPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const { confirmPosition } = useWebSocket(session?.id)
+
+  // Navigation flow state
+  const [pendingDest, setPendingDest] = useState(null)
+  const [positionMode, setPositionMode] = useState(null) // 'modal' | null
+  const [settingPosition, setSettingPosition] = useState(false) // map tap mode
+  const [zoomTrigger, setZoomTrigger] = useState(0)
+
+  // IMU for real-time heading + step-based dead reckoning
+  const { heading, stepCount, permissionGranted, requestPermission, setOnStep } = useIMU()
+  const stepAccumRef = useRef(0) // tracks drift growth
+
+  // Register step callback for dead reckoning
+  useEffect(() => {
+    setOnStep((headingDeg, stepLengthM) => {
+      if (!useStore.getState().positionConfirmed) return
+      const pos = useStore.getState().position
+      const ap = useStore.getState().airport
+
+      // Convert compass heading to displacement
+      // heading 0°=north=+y, 90°=east=+x
+      const rad = (headingDeg * Math.PI) / 180
+      let newX = pos.x_m + stepLengthM * Math.sin(rad)
+      let newY = pos.y_m + stepLengthM * Math.cos(rad)
+
+      // Clamp within map bounds
+      if (ap) {
+        newX = Math.max(1, Math.min(ap.width_m - 1, newX))
+        newY = Math.max(1, Math.min(ap.height_m - 1, newY))
+      }
+
+      // Grow drift radius with each step (uncertainty increases)
+      stepAccumRef.current += 1
+      const drift = Math.min(stepAccumRef.current * 0.3, 15) // caps at 15m
+
+      useStore.getState().setPosition({
+        x_m: newX,
+        y_m: newY,
+        heading_deg: headingDeg,
+        drift_radius_m: drift,
+        source: 'dead_reckoning',
+      })
+    })
+  }, [setOnStep])
+
+  // Update heading in store from IMU (even without steps)
+  useEffect(() => {
+    if (!permissionGranted || !positionConfirmed) return
+    const id = setInterval(() => {
+      const pos = useStore.getState().position
+      if (Math.abs(pos.heading_deg - heading) > 2) {
+        useStore.getState().setPosition({ ...pos, heading_deg: heading })
+      }
+    }, 200)
+    return () => clearInterval(id)
+  }, [permissionGranted, heading, positionConfirmed])
+
+  // Show initial position modal on entry if not yet confirmed
+  useEffect(() => {
+    if (!loading && !positionConfirmed) {
+      setPositionMode('modal')
+      // Try requesting IMU permission early
+      requestPermission()
+    }
+  }, [loading, positionConfirmed, requestPermission])
 
   useEffect(() => {
     const loadAirport = async () => {
@@ -48,52 +482,112 @@ export default function MapPage() {
     loadAirport()
   }, [setAirport, setPois, setNavGraph])
 
-  const handleSelectDestination = useCallback(async (poiId) => {
-    if (!airport || !navGraph?.nodes?.length) return
-    const destNode = navGraph.nodes.find((n) => n.poi_id === poiId)
-    if (!destNode) return
-    let closestNode = navGraph.nodes[0]
-    let closestDist = Infinity
-    for (const node of navGraph.nodes) {
-      const dx = node.x_m - position.x_m
-      const dy = node.y_m - position.y_m
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < closestDist) { closestDist = dist; closestNode = node }
+  // Start navigation after position is confirmed
+  const startNavigation = useCallback(async (fromPos, destPoiId) => {
+    if (!airport) return
+    const walls = useStore.getState().floorWalls
+    const destPoi = pois.find((p) => (p.poi_id || p.id) === destPoiId)
+    if (!destPoi) return
+
+    // Always use wall-aware client-side A* when walls are available.
+    // The server nav graph doesn't know about walls, so its routes can cross them.
+    if (walls?.length > 0) {
+      const result = clientAStar(fromPos, destPoi, pois, airport, walls)
+      if (result) {
+        setRoute(result)
+        // Try to create a session in the background
+        try {
+          const { data: sess } = await createSession({
+            airport_id: airport.id,
+            start_x_m: fromPos.x_m, start_y_m: fromPos.y_m,
+            start_confirmed_by: fromPos.source || 'manual_set',
+            destination_poi_id: destPoiId,
+            route_mode: accessProfile.avoid_stairs ? 'accessible' : 'fastest',
+            nav_mode: accessProfile.nav_mode || 'standard',
+            ar_enabled: accessProfile.ar_enabled,
+          })
+          setSession(sess)
+        } catch {}
+        return
+      }
+      // clientAStar returned null (no path) — fall through to server route
     }
-    try {
-      const mode = accessProfile.avoid_stairs ? 'accessible' : 'fastest'
-      const { data: routeData } = await getRoute({
-        airport_id: airport.id,
-        from_node_id: closestNode.id,
-        to_node_id: destNode.id,
-        mode,
-      })
-      setRoute(routeData)
-      const { data: sess } = await createSession({
-        airport_id: airport.id,
-        start_x_m: position.x_m,
-        start_y_m: position.y_m,
-        start_confirmed_by: 'manual_set',
-        destination_poi_id: poiId,
-        route_mode: mode,
-        nav_mode: accessProfile.nav_mode || 'standard',
-        ar_enabled: accessProfile.ar_enabled,
-      })
-      setSession(sess)
-    } catch (err) {
-      console.error('Failed to compute route:', err)
+
+    // Fallback: server-side nav graph route (no wall awareness)
+    const hasNavGraph = navGraph?.nodes?.length > 0 && navGraph?.edges?.length > 0
+    if (hasNavGraph) {
+      const destNode = navGraph.nodes.find((n) => n.poi_id === destPoiId)
+      if (!destNode) return
+      let closestNode = navGraph.nodes[0]
+      let closestDist = Infinity
+      for (const node of navGraph.nodes) {
+        const dx = node.x_m - fromPos.x_m
+        const dy = node.y_m - fromPos.y_m
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist < closestDist) { closestDist = dist; closestNode = node }
+      }
+      try {
+        const mode = accessProfile.avoid_stairs ? 'accessible' : 'fastest'
+        const { data: routeData } = await getRoute({
+          airport_id: airport.id,
+          from_node_id: closestNode.id,
+          to_node_id: destNode.id,
+          mode,
+        })
+        setRoute(routeData)
+      } catch (err) {
+        console.error('Server route failed:', err)
+      }
     }
-  }, [airport, navGraph, position, accessProfile, setRoute, setSession])
+  }, [airport, navGraph, pois, accessProfile, setRoute, setSession])
+
+  // Navigate here on a POI
+  const handleSelectDestination = useCallback((poiId) => {
+    const destPoi = pois.find((p) => (p.poi_id || p.id) === poiId)
+    if (!destPoi) return
+
+    if (positionConfirmed) {
+      // Position already set — navigate directly
+      startNavigation(useStore.getState().position, poiId)
+    } else {
+      // Need position first
+      setPendingDest(destPoi)
+      setPositionMode('modal')
+    }
+  }, [pois, positionConfirmed, startNavigation])
+
+  // Position is set (from map click or QR scan)
+  const handlePositionSet = useCallback((x_m, y_m, source = 'manual_set') => {
+    const newPos = {
+      x_m, y_m,
+      heading_deg: heading || position.heading_deg,
+      drift_radius_m: 0,
+      source,
+    }
+    setPosition(newPos)
+    setPositionConfirmed(true)
+    stepAccumRef.current = 0 // reset drift on anchor
+    confirmPosition(x_m, y_m)
+    setSettingPosition(false)
+    setPositionMode(null)
+
+    // Zoom to user after setting position
+    setZoomTrigger((t) => t + 1)
+
+    if (pendingDest) {
+      startNavigation(newPos, pendingDest.poi_id || pendingDest.id)
+      setPendingDest(null)
+    }
+  }, [heading, position, setPosition, setPositionConfirmed, confirmPosition, pendingDest, startNavigation])
 
   const handleMapClick = useCallback((x_m, y_m) => {
-    setPosition({
-      x_m, y_m,
-      heading_deg: position.heading_deg,
-      drift_radius_m: 0,
-      source: 'manual_set',
-    })
-    confirmPosition(x_m, y_m)
-  }, [position, setPosition, confirmPosition])
+    if (settingPosition) {
+      handlePositionSet(x_m, y_m, 'manual_set')
+      return
+    }
+    // If position already confirmed, clicking the map doesn't reset it
+    // (only the position modal or long-press nav button does that)
+  }, [settingPosition, handlePositionSet])
 
   const filteredPois = pois?.filter((p) => {
     if (!searchQuery) return false
@@ -108,6 +602,30 @@ export default function MapPage() {
     setSearchOpen(false)
     handleSelectDestination(poi.poi_id || poi.id)
   }
+
+  const handleCancelNavigation = () => {
+    setRoute(null)
+    setPendingDest(null)
+    setPositionMode(null)
+    setSettingPosition(false)
+  }
+
+  // Navigation button: tap = zoom to user, hold = reopen position modal
+  const navButtonHandlers = useLongPress(
+    () => {
+      // Long press: open position modal
+      setPositionMode('modal')
+    },
+    () => {
+      // Tap: zoom to user
+      if (positionConfirmed) {
+        setZoomTrigger((t) => t + 1)
+      } else {
+        setPositionMode('modal')
+      }
+    },
+    500
+  )
 
   if (loading) {
     return (
@@ -133,7 +651,6 @@ export default function MapPage() {
     )
   }
 
-  // Get current route instruction for the next step card
   const currentInstruction = route?.instructions?.[useStore.getState().currentStepIndex]
   const remainingMins = route ? Math.ceil(
     route.instructions?.slice(useStore.getState().currentStepIndex)
@@ -143,7 +660,12 @@ export default function MapPage() {
   return (
     <div className="relative h-full w-full bg-[#0b1120]">
       {/* Map */}
-      <FloorMap onMapClick={handleMapClick} onSelectDestination={handleSelectDestination} />
+      <FloorMap
+        onMapClick={handleMapClick}
+        onSelectDestination={handleSelectDestination}
+        clientRoute={route?._coords}
+        zoomToUserTrigger={zoomTrigger}
+      />
 
       {/* Search Bar Overlay */}
       <div className="absolute top-4 left-4 right-4 z-[1000]">
@@ -160,19 +682,6 @@ export default function MapPage() {
             placeholder="Search Gates, Lounges, or..."
             className="flex-1 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
           />
-          <button className="text-slate-400 hover:text-white p-0.5">
-            <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m-4-4h8m-4-12a3 3 0 00-3 3v4a3 3 0 006 0V8a3 3 0 00-3-3z" />
-            </svg>
-          </button>
-          <button className="relative text-slate-400 hover:text-white p-0.5">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-            </svg>
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-blue-400 rounded-full" />
-          </button>
         </div>
 
         {/* Search Results Dropdown */}
@@ -195,6 +704,36 @@ export default function MapPage() {
         )}
       </div>
 
+      {/* "Setting position" banner when in map-tap mode */}
+      {settingPosition && (
+        <div className="absolute top-16 left-4 right-4 z-[1500]">
+          <div className="bg-slate-800/95 backdrop-blur-md rounded-2xl border border-blue-500/30 px-4 py-3 shadow-xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Set Your Position</p>
+                <p className="text-slate-400 text-[11px] mt-0.5">Tap the map where you are right now</p>
+              </div>
+              <button onClick={() => { setSettingPosition(false); setPendingDest(null); setPositionMode(null) }}
+                className="text-slate-500 hover:text-white">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Position Selection Modal */}
+      {positionMode === 'modal' && (
+        <PositionModal
+          destPoi={pendingDest}
+          onSetPosition={(x, y, source) => handlePositionSet(x, y, source)}
+          onClose={() => { setPositionMode(null); setPendingDest(null) }}
+          onSelectMap={() => { setPositionMode(null); setSettingPosition(true) }}
+        />
+      )}
+
       {/* Floor Level Selector */}
       <div className="absolute top-20 right-4 z-[1000] flex flex-col gap-1">
         {['L3', 'L2', 'L1'].map((lvl) => (
@@ -212,7 +751,7 @@ export default function MapPage() {
         ))}
       </div>
 
-      {/* Zoom Controls */}
+      {/* Zoom Controls + Navigation Button */}
       <div className="absolute right-4 z-[1000] flex flex-col gap-1.5" style={{ top: '220px' }}>
         <button className="w-9 h-9 bg-slate-800/80 backdrop-blur border border-slate-700/50 rounded-lg flex items-center justify-center text-white text-lg hover:bg-slate-700/80 transition-colors">
           +
@@ -220,10 +759,21 @@ export default function MapPage() {
         <button className="w-9 h-9 bg-slate-800/80 backdrop-blur border border-slate-700/50 rounded-lg flex items-center justify-center text-white text-lg hover:bg-slate-700/80 transition-colors">
           -
         </button>
-        <button className="w-9 h-9 bg-slate-800/80 backdrop-blur border border-slate-700/50 rounded-lg flex items-center justify-center text-blue-400 hover:bg-slate-700/80 transition-colors mt-1">
+        {/* Navigation button: tap = zoom to user, hold = reposition */}
+        <button
+          {...navButtonHandlers}
+          className={`w-9 h-9 backdrop-blur border rounded-lg flex items-center justify-center transition-colors mt-1 select-none ${
+            positionConfirmed
+              ? 'bg-blue-600/80 border-blue-500/50 text-white shadow-lg shadow-blue-600/30'
+              : 'bg-slate-800/80 border-slate-700/50 text-slate-400 hover:text-white'
+          }`}
+          title={positionConfirmed ? 'Tap: zoom to me | Hold: set position' : 'Set your position'}
+        >
           <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+              d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
         </button>
       </div>
@@ -242,16 +792,17 @@ export default function MapPage() {
         </button>
       </div>
 
-      {/* User Location Dot Indicator */}
-      <div className="absolute bottom-40 left-5 z-[999]" style={{ display: 'none' }}>
-        <div className="w-3 h-3 bg-blue-500 rounded-full shadow-lg shadow-blue-500/50" />
-      </div>
-
       {/* Next Step Card */}
       {route && currentInstruction && (
         <div className="absolute bottom-24 left-4 right-4 z-[1000]">
           <div className="bg-slate-800/95 backdrop-blur-md rounded-2xl border border-slate-700/30 px-4 py-3 shadow-xl">
-            <p className="text-[10px] text-slate-500 font-semibold tracking-widest uppercase mb-1">Next Step</p>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] text-slate-500 font-semibold tracking-widest uppercase">Next Step</p>
+              <button onClick={handleCancelNavigation}
+                className="text-[10px] text-red-400 hover:text-red-300 font-medium">
+                End Nav
+              </button>
+            </div>
             <div className="flex items-center gap-3">
               <div className="flex-shrink-0 w-10 h-10 bg-blue-500/15 rounded-xl flex items-center justify-center text-blue-400">
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -274,7 +825,7 @@ export default function MapPage() {
         </div>
       )}
 
-      {/* Instruction Banner (fallback when no next step card) */}
+      {/* Instruction Banner (fallback) */}
       {route && !currentInstruction && (
         <div className="absolute bottom-24 left-4 right-4 z-[1000]">
           <InstructionBanner />

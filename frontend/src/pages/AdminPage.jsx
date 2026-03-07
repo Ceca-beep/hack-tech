@@ -4,8 +4,9 @@ import { MapContainer, ImageOverlay, Marker, Popup, useMap, useMapEvents } from 
 import L from 'leaflet'
 import { QRCodeSVG } from 'qrcode.react'
 import { useStore } from '../store'
-import { getAirportPOIs, getAirports, getFlights } from '../api/client'
+import { getAirportPOIs, getAirports, getFlights, getPositionMarkers, createPositionMarker, deletePositionMarker } from '../api/client'
 import api from '../api/client'
+import { useStylizedSvg } from '../hooks/useStylizedSvg'
 
 const TABS = ['Dashboard', 'Airport', 'Notify']
 
@@ -296,7 +297,13 @@ function AirportTab() {
   const [addForm, setAddForm] = useState({ name: '', category_id: 1, gate_number: '' })
   const fileRef = useRef(null)
 
-  // Load airport + POIs on mount if not already in store
+  // Position markers state
+  const [markers, setMarkers] = useState([])
+  const [markerAddMode, setMarkerAddMode] = useState(false)
+  const [markerName, setMarkerName] = useState('')
+  const [qrMarker, setQrMarker] = useState(null)
+
+  // Load airport + POIs + position markers on mount
   useEffect(() => {
     const load = async () => {
       try {
@@ -307,8 +314,12 @@ function AirportTab() {
           if (ap) setAirport(ap)
         }
         if (ap) {
-          const { data } = await getAirportPOIs(ap.id)
-          setPois(data || [])
+          const [poisRes, markersRes] = await Promise.all([
+            getAirportPOIs(ap.id),
+            getPositionMarkers(),
+          ])
+          setPois(poisRes.data || [])
+          setMarkers(markersRes.data || [])
         }
       } catch {}
     }
@@ -353,6 +364,19 @@ function AirportTab() {
   }
 
   const handleMapClick = async (x_m, y_m) => {
+    if (markerAddMode && markerName && airport) {
+      try {
+        const { data } = await createPositionMarker({
+          airport_id: airport.id,
+          name: markerName,
+          x_m, y_m,
+        })
+        setMarkers((prev) => [...prev, data])
+        setMarkerName('')
+        setMarkerAddMode(false)
+      } catch {}
+      return
+    }
     if (!addMode || !addForm.name || !airport) return
     try {
       await api.post('/admin/pois', {
@@ -378,7 +402,8 @@ function AirportTab() {
     } catch {}
   }
 
-  const floorPlanUrl = airport?.floor_plan_url || '/assets/floorplan.svg'
+  const rawFloorPlanUrl = airport?.floor_plan_url || '/assets/floorplan.svg'
+  const floorPlanUrl = useStylizedSvg(rawFloorPlanUrl)
   const bounds = useMemo(
     () => airport ? [[0, 0], [airport.height_m, airport.width_m]] : [[0, 0], [200, 400]],
     [airport]
@@ -397,7 +422,7 @@ function AirportTab() {
         >
           {uploading ? 'Uploading...' : 'Upload Map'}
         </button>
-        <span className="text-xs text-slate-600 truncate max-w-xs">{floorPlanUrl}</span>
+        <span className="text-xs text-slate-600 truncate max-w-xs">{rawFloorPlanUrl}</span>
       </div>
 
       {/* Add POI form */}
@@ -428,7 +453,7 @@ function AirportTab() {
           />
         </div>
         <button
-          onClick={() => setAddMode(!addMode)}
+          onClick={() => { setAddMode(!addMode); setMarkerAddMode(false) }}
           className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
             addMode
               ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
@@ -442,7 +467,7 @@ function AirportTab() {
       {/* Interactive map */}
       <div className="rounded-xl overflow-hidden border border-slate-700/30" style={{ height: '50vh' }}>
         <MapContainer
-          key={floorPlanUrl}
+          key={rawFloorPlanUrl}
           crs={L.CRS.Simple}
           bounds={bounds}
           maxBounds={bounds}
@@ -456,7 +481,32 @@ function AirportTab() {
         >
           <ImageOverlay url={floorPlanUrl} bounds={bounds} opacity={0.9} />
           <MapFitter bounds={bounds} />
-          {addMode && <ClickHandler onClick={handleMapClick} />}
+          {(addMode || markerAddMode) && <ClickHandler onClick={handleMapClick} />}
+          {markers.map((m) => (
+            <Marker
+              key={m.id}
+              position={[m.y_m, m.x_m]}
+              icon={L.divIcon({
+                className: '',
+                html: `<div style="
+                  width:22px;height:22px;border-radius:4px;
+                  background:#f59e0b;border:2px solid #d97706;
+                  display:flex;align-items:center;justify-content:center;
+                  color:white;font-size:10px;font-weight:700;
+                  box-shadow:0 2px 8px rgba(245,158,11,.5);
+                ">Q</div>`,
+                iconSize: [22, 22],
+                iconAnchor: [11, 11],
+              })}
+            >
+              <Popup>
+                <div style={{ color: '#e2e8f0', minWidth: 120, fontSize: 12 }}>
+                  <p style={{ fontWeight: 'bold' }}>{m.name}</p>
+                  <p style={{ color: '#94a3b8', fontSize: 10 }}>x:{m.x_m?.toFixed(1)} y:{m.y_m?.toFixed(1)}</p>
+                </div>
+              </Popup>
+            </Marker>
+          ))}
           {pois.map((p) => (
             <DraggablePoi
               key={p.poi_id || p.id}
@@ -501,6 +551,81 @@ function AirportTab() {
           </table>
         </div>
       </div>
+
+      {/* ── Position Markers ─────────────────────────── */}
+      <h3 className="text-xs font-bold text-slate-400 tracking-widest uppercase mt-6">
+        Position QR Markers
+      </h3>
+      <p className="text-[10px] text-slate-600 -mt-2">Place QR codes around the airport for indoor positioning</p>
+
+      <div className="flex flex-wrap items-end gap-2">
+        <div>
+          <label className="block text-[10px] text-slate-500 uppercase mb-0.5">Marker Name</label>
+          <input
+            value={markerName} onChange={(e) => setMarkerName(e.target.value)}
+            placeholder="Main Entrance"
+            className="px-2.5 py-1.5 bg-slate-800/60 border border-slate-700/50 rounded-lg text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/50 w-44"
+          />
+        </div>
+        <button
+          onClick={() => { setMarkerAddMode(!markerAddMode); setAddMode(false) }}
+          className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+            markerAddMode
+              ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+              : 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30'
+          }`}
+        >
+          {markerAddMode ? 'Click map to place...' : '+ Add Marker'}
+        </button>
+      </div>
+
+      <div className="bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto max-h-48">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-slate-800/90">
+              <tr className="border-b border-slate-700/30 text-[10px] text-slate-500 uppercase tracking-wider">
+                <th className="text-left px-4 py-2">Name</th>
+                <th className="text-left px-3 py-2">Pos</th>
+                <th className="text-center px-3 py-2">QR</th>
+                <th className="text-right px-4 py-2">Del</th>
+              </tr>
+            </thead>
+            <tbody>
+              {markers.length === 0 ? (
+                <tr><td colSpan={4} className="text-center py-4 text-slate-600 text-xs">No position markers yet</td></tr>
+              ) : markers.map((m) => (
+                <tr key={m.id} className="border-b border-slate-700/20 hover:bg-slate-800/30">
+                  <td className="px-4 py-1.5 text-white text-xs">{m.name}</td>
+                  <td className="px-3 py-1.5 text-slate-600 text-[10px] font-mono">{m.x_m?.toFixed(0)},{m.y_m?.toFixed(0)}</td>
+                  <td className="px-3 py-1.5 text-center">
+                    <button onClick={() => setQrMarker(m)} className="text-amber-400 hover:text-amber-300 text-xs font-medium">
+                      View QR
+                    </button>
+                  </td>
+                  <td className="px-4 py-1.5 text-right">
+                    <button
+                      onClick={async () => {
+                        try {
+                          await deletePositionMarker(m.id)
+                          setMarkers((prev) => prev.filter((x) => x.id !== m.id))
+                        } catch {}
+                      }}
+                      className="text-slate-600 hover:text-red-400 transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Position Marker QR Modal */}
+      {qrMarker && <PositionMarkerQRModal marker={qrMarker} onClose={() => setQrMarker(null)} />}
     </div>
   )
 }
@@ -565,6 +690,41 @@ function DraggablePoi({ poi, onDragEnd, onDelete }) {
         </div>
       </Popup>
     </Marker>
+  )
+}
+
+function PositionMarkerQRModal({ marker, onClose }) {
+  const qrData = JSON.stringify({
+    type: 'skyguide_position',
+    marker_id: marker.id,
+    name: marker.name,
+    x_m: marker.x_m,
+    y_m: marker.y_m,
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/80" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl w-full max-w-sm mx-4 p-6 text-center">
+        <button onClick={onClose} className="absolute top-3 right-3 text-slate-400 hover:text-slate-600">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <p className="text-xs text-slate-500 uppercase tracking-widest mb-1">Position Marker</p>
+        <p className="text-xl font-bold text-slate-900 mb-1">{marker.name}</p>
+        <p className="text-sm text-slate-500 mb-4">
+          x: {marker.x_m?.toFixed(1)}m, y: {marker.y_m?.toFixed(1)}m
+        </p>
+
+        <div className="bg-slate-50 rounded-xl p-4 mb-4 inline-block">
+          <QRCodeSVG value={qrData} size={200} level="M" />
+        </div>
+
+        <p className="text-[10px] text-slate-400">Print and place this QR code at the marked location</p>
+      </div>
+    </div>
   )
 }
 

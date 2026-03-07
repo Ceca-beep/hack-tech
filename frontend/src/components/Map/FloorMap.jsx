@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { MapContainer, ImageOverlay, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import { useStore } from '../../store'
+import { useStylizedSvg } from '../../hooks/useStylizedSvg'
 import BlueDot from './BlueDot'
 import RoutePolyline from './RoutePolyline'
 import POIMarkers from './POIMarkers'
@@ -34,15 +35,29 @@ function MapClickHandler({ onMapClick }) {
   return null
 }
 
-export default function FloorMap({ onMapClick, onSelectDestination }) {
-  const { airport, route, pois, navGraph } = useStore()
+function ZoomToUser({ trigger }) {
+  const map = useMap()
+  const { position } = useStore()
+
+  useEffect(() => {
+    if (!trigger) return
+    const latlng = [position.y_m, position.x_m]
+    map.flyTo(latlng, 2, { duration: 0.5 })
+  }, [trigger, map, position])
+
+  return null
+}
+
+export default function FloorMap({ onMapClick, onSelectDestination, clientRoute, zoomToUserTrigger }) {
+  const { airport } = useStore()
 
   const bounds = useMemo(() => {
     if (!airport) return [[0, 0], [200, 400]]
     return [[0, 0], [airport.height_m, airport.width_m]]
   }, [airport])
 
-  const floorPlanUrl = airport?.floor_plan_url || '/assets/floorplan.svg'
+  const rawFloorPlanUrl = airport?.floor_plan_url || '/assets/floorplan.svg'
+  const floorPlanUrl = useStylizedSvg(rawFloorPlanUrl)
 
   return (
     <MapContainer
@@ -60,8 +75,9 @@ export default function FloorMap({ onMapClick, onSelectDestination }) {
       <ImageOverlay url={floorPlanUrl} bounds={bounds} opacity={0.9} />
       <MapController airport={airport} />
       <MapClickHandler onMapClick={onMapClick} />
+      <ZoomToUser trigger={zoomToUserTrigger} />
       <BlueDot />
-      <RoutePolyline />
+      <RoutePolyline clientRoute={clientRoute} />
       <POIMarkers onSelectDestination={onSelectDestination} />
     </MapContainer>
   )

@@ -13,6 +13,7 @@ from database import get_db
 from models.airport import Airport, Poi
 from models.flights import Flight
 from models.notifications import NotificationQueue
+from models.position_marker import PositionMarker
 from services import flight_simulator as sim
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -141,6 +142,39 @@ async def update_poi(poi_id: str, body: dict = Body(...), db: AsyncSession = Dep
 @router.delete("/pois/{poi_id}")
 async def delete_poi(poi_id: str, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
     await db.execute(delete(Poi).where(Poi.id == poi_id))
+    await db.commit()
+    return {"ok": True}
+
+
+# ── Position Markers ───────────────────────────────────────────────
+
+@router.get("/position-markers")
+async def list_position_markers(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    result = await db.execute(select(PositionMarker))
+    markers = result.scalars().all()
+    return [
+        {"id": str(m.id), "airport_id": str(m.airport_id), "name": m.name, "x_m": m.x_m, "y_m": m.y_m}
+        for m in markers
+    ]
+
+
+@router.post("/position-markers")
+async def create_position_marker(body: dict = Body(...), db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    marker = PositionMarker(
+        airport_id=body["airport_id"],
+        name=body["name"],
+        x_m=body["x_m"],
+        y_m=body["y_m"],
+    )
+    db.add(marker)
+    await db.commit()
+    await db.refresh(marker)
+    return {"id": str(marker.id), "airport_id": str(marker.airport_id), "name": marker.name, "x_m": marker.x_m, "y_m": marker.y_m}
+
+
+@router.delete("/position-markers/{marker_id}")
+async def delete_position_marker(marker_id: str, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    await db.execute(delete(PositionMarker).where(PositionMarker.id == marker_id))
     await db.commit()
     return {"ok": True}
 

@@ -31,3 +31,4 @@ from models.accessibility import (  # noqa: E402, F401
 from models.flights import Flight, FlightSubscription  # noqa: E402, F401
 from models.notifications import NotificationQueue  # noqa: E402, F401
 from models.push import PushSubscription  # noqa: E402, F401
+from models.position_marker import PositionMarker  # noqa: E402, F401

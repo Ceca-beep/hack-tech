@@ -35,5 +35,8 @@ export const getMyFlights      = ()            => api.get('/flights/subscribed')
 export const getAccessProfile  = (key)         => api.get('/accessibility', { params: { device_key: key } })
 export const updateAccessProfile = (body)      => api.put('/accessibility', body)
 export const getHapticPatterns = ()            => api.get('/haptic-patterns')
+export const getPositionMarkers = ()           => api.get('/admin/position-markers')
+export const createPositionMarker = (body)     => api.post('/admin/position-markers', body)
+export const deletePositionMarker = (id)       => api.delete(`/admin/position-markers/${id}`)
 
 export default api

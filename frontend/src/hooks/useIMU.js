@@ -2,6 +2,11 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 
 const SAMPLE_RATE_MS = 50
 
+// Step detection parameters
+const STEP_THRESHOLD = 12.5   // m/s² — accel magnitude peak to count as a step
+const STEP_COOLDOWN_MS = 300  // minimum time between steps
+const STEP_LENGTH_M = 0.7     // average step length in metres
+
 export function useIMU() {
   const [isAvailable, setIsAvailable] = useState(false)
   const [permissionGranted, setPermissionGranted] = useState(false)
@@ -11,6 +16,14 @@ export function useIMU() {
   const [accel, setAccel] = useState({ x: 0, y: 0, z: 0 })
   const [gyro, setGyro] = useState({ x: 0, y: 0, z: 0 })
   const [heading, setHeading] = useState(0)
+
+  // Step detection state
+  const stepCountRef = useRef(0)
+  const [stepCount, setStepCount] = useState(0)
+  const lastStepTimeRef = useRef(0)
+  const prevMagRef = useRef(9.8)
+  const risingRef = useRef(false)
+  const onStepRef = useRef(null)
 
   const requestPermission = useCallback(async () => {
     // iOS 13+ requires explicit permission request triggered by user gesture
@@ -62,17 +75,38 @@ export function useIMU() {
         y: r.beta ?? 0,
         z: r.gamma ?? 0,
       }
+
+      // Step detection: peak detection on acceleration magnitude
+      const mag = Math.sqrt(
+        (a.x ?? 0) ** 2 + (a.y ?? 0) ** 2 + (a.z ?? 0) ** 2
+      )
+      const prev = prevMagRef.current
+      const now = Date.now()
+
+      if (mag > prev) {
+        risingRef.current = true
+      } else if (risingRef.current && prev >= STEP_THRESHOLD) {
+        // We were rising and just peaked above threshold — count a step
+        risingRef.current = false
+        if (now - lastStepTimeRef.current > STEP_COOLDOWN_MS) {
+          lastStepTimeRef.current = now
+          stepCountRef.current += 1
+          // Fire callback with current heading
+          if (onStepRef.current) {
+            onStepRef.current(headingRef.current, STEP_LENGTH_M)
+          }
+        }
+      } else {
+        risingRef.current = false
+      }
+
+      prevMagRef.current = mag
     }
 
     const handleOrientation = (e) => {
-      // alpha: compass heading (0-360), 0 = north
-      // On most devices alpha is the compass direction the device is facing
       if (e.webkitCompassHeading !== undefined) {
-        // iOS provides webkitCompassHeading as degrees from north
         headingRef.current = e.webkitCompassHeading
       } else if (e.alpha !== null) {
-        // Android: alpha is 0 when pointing north, increases counter-clockwise
-        // Convert to compass heading (clockwise from north)
         headingRef.current = (360 - e.alpha) % 360
       }
     }
@@ -85,6 +119,7 @@ export function useIMU() {
       setAccel({ ...accelRef.current })
       setGyro({ ...gyroRef.current })
       setHeading(headingRef.current)
+      setStepCount(stepCountRef.current)
     }, SAMPLE_RATE_MS)
 
     return () => {
@@ -94,12 +129,19 @@ export function useIMU() {
     }
   }, [permissionGranted])
 
+  // Register a step callback — called with (headingDeg, stepLengthM) on each detected step
+  const setOnStep = useCallback((fn) => {
+    onStepRef.current = fn
+  }, [])
+
   return {
     accel,
     gyro,
     heading,
+    stepCount,
     isAvailable,
     permissionGranted,
     requestPermission,
+    setOnStep,
   }
 }

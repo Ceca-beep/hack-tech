@@ -16,7 +16,9 @@ export const useStore = create(
 
       // Position (updated by WebSocket)
       position: { x_m: 20, y_m: 30, heading_deg: 0, drift_radius_m: 0, source: 'manual_set' },
+      positionConfirmed: false,
       setPosition: (p) => set({ position: p }),
+      setPositionConfirmed: (v) => set({ positionConfirmed: v }),
 
       // Airport
       airport: null,
@@ -25,6 +27,8 @@ export const useStore = create(
       setAirport: (a) => set({ airport: a }),
       setPois: (p) => set({ pois: p }),
       setNavGraph: (g) => set({ navGraph: g }),
+      floorWalls: [],  // [{x1,y1,x2,y2}] in map-metre coords, parsed from SVG
+      setFloorWalls: (w) => set({ floorWalls: w }),
 
       // Route
       route: null,
