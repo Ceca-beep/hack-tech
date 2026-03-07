@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useStore } from '../store'
 import { login, register } from '../api/client'
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { setAuth } = useStore()
+  const redirectTo = location.state?.from?.pathname || '/map'
   const [isRegister, setIsRegister] = useState(false)
   const [form, setForm] = useState({
     username: '',
@@ -36,7 +38,7 @@ export default function LoginPage() {
           data.access_token
         )
       }
-      navigate('/map')
+      navigate(redirectTo)
     } catch (err) {
       setError(err.response?.data?.detail || 'Authentication failed')
     } finally {

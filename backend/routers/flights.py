@@ -44,22 +44,28 @@ async def list_flights(
     result = await db.execute(stmt)
     flights = result.scalars().all()
 
-    return [
-        FlightOut(
-            id=str(f.id),
-            airport_id=str(f.airport_id),
-            flight_number=f.flight_number,
-            airline_iata=f.airline_iata.strip() if f.airline_iata else "",
-            direction=f.direction,
-            scheduled_at=f.scheduled_at,
-            estimated_at=f.estimated_at,
-            actual_at=f.actual_at,
-            gate_poi_id=str(f.gate_poi_id) if f.gate_poi_id else None,
-            status=f.status,
-            baggage_belt=f.baggage_belt,
-        )
-        for f in flights
-    ]
+    return [_flight_out(f) for f in flights]
+
+
+def _flight_out(f: Flight) -> FlightOut:
+    src = f.raw_source or {}
+    return FlightOut(
+        id=str(f.id),
+        airport_id=str(f.airport_id),
+        flight_number=f.flight_number,
+        airline_iata=f.airline_iata.strip() if f.airline_iata else "",
+        direction=f.direction,
+        scheduled_at=f.scheduled_at,
+        estimated_at=f.estimated_at,
+        actual_at=f.actual_at,
+        gate_poi_id=str(f.gate_poi_id) if f.gate_poi_id else None,
+        status=f.status,
+        baggage_belt=f.baggage_belt,
+        gate=src.get("gate"),
+        terminal=src.get("terminal"),
+        origin_code=src.get("origin"),
+        destination_code=src.get("destination"),
+    )
 
 
 @router.post("/flights/{flight_id}/subscribe", response_model=FlightSubscriptionOut)
@@ -106,19 +112,4 @@ async def get_subscribed_flights(
     result = await db.execute(stmt)
     flights = result.scalars().all()
 
-    return [
-        FlightOut(
-            id=str(f.id),
-            airport_id=str(f.airport_id),
-            flight_number=f.flight_number,
-            airline_iata=f.airline_iata.strip() if f.airline_iata else "",
-            direction=f.direction,
-            scheduled_at=f.scheduled_at,
-            estimated_at=f.estimated_at,
-            actual_at=f.actual_at,
-            gate_poi_id=str(f.gate_poi_id) if f.gate_poi_id else None,
-            status=f.status,
-            baggage_belt=f.baggage_belt,
-        )
-        for f in flights
-    ]
+    return [_flight_out(f) for f in flights]

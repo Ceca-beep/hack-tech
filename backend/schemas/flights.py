@@ -15,6 +15,10 @@ class FlightOut(BaseModel):
     gate_poi_id: str | None = None
     status: str
     baggage_belt: str | None = None
+    gate: str | None = None
+    terminal: str | None = None
+    origin_code: str | None = None
+    destination_code: str | None = None
 
     model_config = {"from_attributes": True}
 

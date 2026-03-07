@@ -7,6 +7,7 @@ import FlightsPage from './pages/FlightsPage'
 import ARPage from './pages/ARPage'
 import IdentityPage from './pages/IdentityPage'
 import ProfilePage from './pages/ProfilePage'
+import AdminPage from './pages/AdminPage'
 import DemoPage from './pages/DemoPage'
 
 function AuthGuard({ children }) {
@@ -64,6 +65,14 @@ export default function App() {
           element={
             <AuthGuard>
               <ProfilePage />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <AuthGuard>
+              <AdminPage />
             </AuthGuard>
           }
         />

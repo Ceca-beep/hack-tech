@@ -13,6 +13,7 @@ from database import SessionLocal, engine
 from models import Base
 from routers import (
     accessibility,
+    admin,
     airports,
     auth,
     flights,
@@ -26,18 +27,21 @@ from routers import (
     touchpoints,
 )
 from services.push_worker import run_push_worker
+from services.flight_simulator import run_flight_simulator
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    task = asyncio.create_task(run_push_worker(SessionLocal))
+    push_task = asyncio.create_task(run_push_worker(SessionLocal))
+    sim_task = asyncio.create_task(run_flight_simulator(SessionLocal))
     yield
-    task.cancel()
+    push_task.cancel()
+    sim_task.cancel()
 
 
-app = FastAPI(title="Airport Companion", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="SkyGuide", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,8 +73,14 @@ for r in [
     flights,
     accessibility,
     replay,
+    admin,
 ]:
     app.include_router(r.router, prefix="/api", tags=[r.__name__.split(".")[-1]])
+
+# Serve uploaded map images
+_uploads_dir = Path(__file__).resolve().parent / "uploads"
+_uploads_dir.mkdir(exist_ok=True)
+app.mount("/api/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
 
 # Serve frontend build (when nginx is not available)
 _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"

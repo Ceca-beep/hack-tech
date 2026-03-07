@@ -1,64 +1,72 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
-import { getFlights, getMyFlights, subscribeFlight } from '../api/client'
+import { getFlights, getMyFlights } from '../api/client'
 import BottomNav from '../components/BottomNav'
 
 const STATUS_COLORS = {
   boarding: 'bg-blue-500/20 text-blue-400',
+  'final call': 'bg-orange-500/20 text-orange-400',
   delayed: 'bg-red-500/20 text-red-400',
   on_time: 'bg-green-500/20 text-green-400',
   scheduled: 'bg-green-500/20 text-green-400',
   cancelled: 'bg-red-500/20 text-red-400',
   landed: 'bg-slate-500/20 text-slate-400',
+  arrived: 'bg-green-500/20 text-green-400',
   departed: 'bg-cyan-500/20 text-cyan-400',
 }
 
 const AIRLINE_COLORS = {
-  UA: '#2563eb',
-  AA: '#dc2626',
-  DL: '#7c3aed',
-  B6: '#0891b2',
-  SG: '#3b82f6',
-  EK: '#f59e0b',
-  default: '#3b82f6',
+  UA: '#2563eb', AA: '#dc2626', DL: '#7c3aed', B6: '#0891b2',
+  SG: '#3b82f6', EK: '#f59e0b', BA: '#1e40af', LH: '#eab308',
+  AF: '#6366f1', JL: '#ef4444', default: '#3b82f6',
 }
 
 function getAirlineColor(flightNum) {
-  const prefix = flightNum?.replace(/[0-9]/g, '').trim()
+  const prefix = flightNum?.replace(/[0-9\s]/g, '').trim()
   return AIRLINE_COLORS[prefix] || AIRLINE_COLORS.default
 }
 
 export default function FlightsPage() {
+  const navigate = useNavigate()
   const { accessToken } = useStore()
   const [activeTab, setActiveTab] = useState('my')
-  const [direction, setDirection] = useState('departures')
+  const [direction, setDirection] = useState('departure')
   const [searchQuery, setSearchQuery] = useState('')
-  const [flights, setFlights] = useState([])
+  const [apiFlights, setApiFlights] = useState([])
   const [myFlights, setMyFlights] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let cancelled = false
     const load = async () => {
-      setLoading(true)
       try {
         const [allRes, myRes] = await Promise.all([
           getFlights({ direction }),
           getMyFlights(),
         ])
-        setFlights(allRes.data || [])
-        setMyFlights(myRes.data || [])
+        if (!cancelled) {
+          setApiFlights(allRes.data || [])
+          setMyFlights(myRes.data || [])
+          setLoading(false)
+        }
       } catch {
-        // Use demo data if API fails
-        setFlights(DEMO_FLIGHTS)
-        setMyFlights(DEMO_FLIGHTS.slice(0, 2))
-      } finally {
-        setLoading(false)
+        if (!cancelled) {
+          setApiFlights([])
+          setMyFlights([])
+          setLoading(false)
+        }
       }
     }
     load()
+    const interval = setInterval(load, 5000)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [direction, accessToken])
 
-  const displayFlights = activeTab === 'my' ? myFlights : flights
+  const allFlights = apiFlights
+
+  const displayFlights = activeTab === 'my' ? myFlights : allFlights
+
   const filtered = displayFlights.filter((f) => {
     if (!searchQuery) return true
     const q = searchQuery.toLowerCase()
@@ -70,14 +78,6 @@ export default function FlightsPage() {
       f.destination_city?.toLowerCase().includes(q)
     )
   })
-
-  const handleSubscribe = async (flightId) => {
-    try {
-      await subscribeFlight(flightId)
-      const { data } = await getMyFlights()
-      setMyFlights(data || [])
-    } catch {}
-  }
 
   return (
     <div className="min-h-full bg-[#0b1120] flex flex-col">
@@ -145,9 +145,9 @@ export default function FlightsPage() {
       {/* Direction Toggle */}
       <div className="flex mx-5 mb-5 bg-slate-800/40 rounded-xl p-1">
         <button
-          onClick={() => setDirection('departures')}
+          onClick={() => setDirection('departure')}
           className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${
-            direction === 'departures'
+            direction === 'departure'
               ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
               : 'text-slate-400 hover:text-slate-300'
           }`}
@@ -155,9 +155,9 @@ export default function FlightsPage() {
           Departures
         </button>
         <button
-          onClick={() => setDirection('arrivals')}
+          onClick={() => setDirection('arrival')}
           className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${
-            direction === 'arrivals'
+            direction === 'arrival'
               ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
               : 'text-slate-400 hover:text-slate-300'
           }`}
@@ -181,8 +181,8 @@ export default function FlightsPage() {
             <FlightCard
               key={flight.id || flight.flight_number}
               flight={flight}
-              onSubscribe={() => handleSubscribe(flight.id)}
-              isSubscribed={myFlights.some((f) => f.id === flight.id)}
+              showAddButton={activeTab === 'all'}
+              onAdd={() => navigate('/identity', { state: { openScanner: true } })}
             />
           ))
         )}
@@ -193,8 +193,14 @@ export default function FlightsPage() {
   )
 }
 
-function FlightCard({ flight, onSubscribe, isSubscribed }) {
-  const statusKey = flight.status?.toLowerCase().replace(/\s+/g, '_') || 'scheduled'
+function formatTime(dt) {
+  if (!dt) return '--:--'
+  const d = new Date(dt)
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function FlightCard({ flight, showAddButton, onAdd }) {
+  const statusKey = flight.status?.toLowerCase() || 'scheduled'
   const statusColor = STATUS_COLORS[statusKey] || STATUS_COLORS.scheduled
   const airlineColor = getAirlineColor(flight.flight_number)
   const isDelayed = statusKey === 'delayed'
@@ -205,28 +211,20 @@ function FlightCard({ flight, onSubscribe, isSubscribed }) {
         <span className="text-sm font-bold" style={{ color: airlineColor }}>
           {flight.flight_number}
         </span>
-        <div className="flex items-center gap-2">
-          <span className={`text-[10px] font-bold uppercase px-2.5 py-1 rounded-md ${statusColor}`}>
-            {flight.status?.replace(/_/g, ' ') || 'Scheduled'}
-          </span>
-        </div>
+        <span className={`text-[10px] font-bold uppercase px-2.5 py-1 rounded-md ${statusColor}`}>
+          {flight.status?.replace(/_/g, ' ') || 'Scheduled'}
+        </span>
       </div>
 
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="text-white text-lg font-bold">
-            {flight.origin_code || 'SFO'}
-          </span>
+          <span className="text-white text-lg font-bold">{flight.origin_code || '--'}</span>
           <svg className="w-5 h-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
           </svg>
-          <span className="text-white text-lg font-bold">
-            {flight.destination_code || 'JFK'}
-          </span>
+          <span className="text-white text-lg font-bold">{flight.destination_code || '--'}</span>
         </div>
-        <span className="text-slate-500 text-xs">
-          Gate {flight.gate || '--'}
-        </span>
+        <span className="text-slate-500 text-xs">Gate {flight.gate || '--'}</span>
       </div>
 
       <div className="flex items-center justify-between">
@@ -235,38 +233,28 @@ function FlightCard({ flight, onSubscribe, isSubscribed }) {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          {isDelayed && flight.scheduled_time ? (
+          {isDelayed && flight.estimated_at ? (
             <span className="text-xs">
-              <span className="line-through text-slate-600 mr-1">{flight.scheduled_time}</span>
-              <span className="text-red-400">{flight.estimated_time || flight.scheduled_time}</span>
+              <span className="line-through text-slate-600 mr-1">{formatTime(flight.scheduled_at)}</span>
+              <span className="text-red-400">{formatTime(flight.estimated_at)}</span>
             </span>
           ) : (
-            <span className="text-xs">{flight.scheduled_time || flight.departure_time || '--:--'}</span>
+            <span className="text-xs">{formatTime(flight.scheduled_at)}</span>
           )}
         </div>
-        <span className="text-slate-500 text-xs">
-          Terminal {flight.terminal || '--'}
-        </span>
+        {showAddButton ? (
+          <button onClick={onAdd}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 rounded-lg transition-colors">
+            <svg className="w-3.5 h-3.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+            </svg>
+            <span className="text-xs font-medium text-blue-400">Scan QR</span>
+          </button>
+        ) : (
+          <span className="text-slate-500 text-xs">Terminal {flight.terminal || '--'}</span>
+        )}
       </div>
     </div>
   )
 }
-
-const DEMO_FLIGHTS = [
-  {
-    id: 1, flight_number: 'UA 2402', origin_code: 'SFO', destination_code: 'JFK',
-    status: 'Boarding', gate: 'B12', scheduled_time: '14:30', terminal: '3',
-  },
-  {
-    id: 2, flight_number: 'AA 0941', origin_code: 'LAX', destination_code: 'ORD',
-    status: 'Delayed', gate: 'C04', scheduled_time: '15:15', estimated_time: '16:05', terminal: '1',
-  },
-  {
-    id: 3, flight_number: 'DL 4482', origin_code: 'SEA', destination_code: 'ATL',
-    status: 'On Time', gate: 'A08', scheduled_time: '17:00', terminal: '2',
-  },
-  {
-    id: 4, flight_number: 'B6 1205', origin_code: 'BOS', destination_code: 'MCO',
-    status: 'On Time', gate: 'E02', scheduled_time: '18:45', terminal: 'C',
-  },
-]

@@ -9,8 +9,14 @@ export function usePushNotifications() {
     if (!user || !('serviceWorker' in navigator) || !('PushManager' in window)) return
 
     const setup = async () => {
-      // 1. Register service worker
-      const reg = await navigator.serviceWorker.register('/sw.js')
+      // 1. Register service worker (may fail with self-signed certs in dev)
+      let reg
+      try {
+        reg = await navigator.serviceWorker.register('/sw.js')
+      } catch {
+        console.warn('Service worker registration failed (expected with self-signed certs)')
+        return
+      }
 
       // 2. Check existing permission
       if (Notification.permission === 'denied') return
