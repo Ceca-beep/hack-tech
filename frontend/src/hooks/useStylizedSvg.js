@@ -268,85 +268,60 @@ function stylizeSvg(raw) {
     svg.prepend(defs)
   }
 
-  const gridSize = Math.round(vbW / 16)
+  const gridSize = Math.round(vbW / 24)
   defs.innerHTML = `
-    <filter id="wallGlow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
-      <feColorMatrix in="blur" type="matrix"
-        values="0 0 0 0 0.23
-                0 0 0 0 0.51
-                0 0 0 0 0.96
-                0 0 0 0.7 0" result="glow"/>
-      <feMerge>
-        <feMergeNode in="glow"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <radialGradient id="floorGrad" cx="50%" cy="50%" r="65%">
-      <stop offset="0%" stop-color="#0f2744"/>
-      <stop offset="100%" stop-color="#060c18"/>
-    </radialGradient>
     <pattern id="fpGrid" width="${gridSize}" height="${gridSize}" patternUnits="userSpaceOnUse">
-      <path d="M ${gridSize} 0 L 0 0 0 ${gridSize}" fill="none" stroke="#1e3a5f" stroke-width="0.5" opacity="0.35"/>
+      <path d="M ${gridSize} 0 L 0 0 0 ${gridSize}" fill="none" stroke="#334155" stroke-width="0.5" opacity="0.3"/>
     </pattern>
   `
 
-  // Build new SVG content from scratch for reliability
   const ns = 'http://www.w3.org/2000/svg'
-
-  // Background
-  const bg = doc.createElementNS(ns, 'rect')
-  bg.setAttribute('width', vbW)
-  bg.setAttribute('height', vbH)
-  bg.setAttribute('fill', 'url(#floorGrad)')
-
-  const grid = doc.createElementNS(ns, 'rect')
-  grid.setAttribute('width', vbW)
-  grid.setAttribute('height', vbH)
-  grid.setAttribute('fill', 'url(#fpGrid)')
 
   // Find the main geometry group
   const mainGroup = svg.querySelector('g') || svg
 
-  // Clone geometry for shadow layer (wider, faint)
-  const shadow = mainGroup.cloneNode(true)
-  shadow.setAttribute('stroke', '#60a5fa')
-  shadow.setAttribute('stroke-width', '12')
-  shadow.setAttribute('stroke-opacity', '0.12')
-  shadow.setAttribute('stroke-linecap', 'round')
-  shadow.setAttribute('stroke-linejoin', 'round')
-  shadow.removeAttribute('filter')
-  shadow.querySelectorAll('path, line, polyline').forEach((el) => {
+  // Floor surface — visible tinted region so the building stands out from the canvas
+  const floorFill = mainGroup.cloneNode(true)
+  floorFill.setAttribute('fill', '#1a2744')
+  floorFill.setAttribute('fill-opacity', '1')
+  floorFill.setAttribute('stroke', 'none')
+  floorFill.querySelectorAll('path, line, polyline, rect, polygon').forEach((el) => {
+    el.setAttribute('fill', '#1a2744')
+    el.setAttribute('fill-opacity', '1')
     el.removeAttribute('stroke')
     el.removeAttribute('stroke-width')
-    el.removeAttribute('stroke-opacity')
   })
 
-  // Style the main group
-  mainGroup.setAttribute('stroke', '#3b82f6')
-  mainGroup.setAttribute('stroke-width', '3')
-  mainGroup.setAttribute('stroke-opacity', '0.9')
+  // Subtle grid overlay on the floor
+  const gridRect = doc.createElementNS(ns, 'rect')
+  gridRect.setAttribute('width', vbW)
+  gridRect.setAttribute('height', vbH)
+  gridRect.setAttribute('fill', 'url(#fpGrid)')
+
+  // Wall lines — crisp with slight brightness
+  mainGroup.setAttribute('stroke', '#64748b')
+  mainGroup.setAttribute('stroke-width', '2.5')
+  mainGroup.setAttribute('stroke-opacity', '1')
   mainGroup.setAttribute('stroke-linecap', 'round')
   mainGroup.setAttribute('stroke-linejoin', 'round')
-  mainGroup.setAttribute('filter', 'url(#wallGlow)')
-  // Clear per-element strokes so group style inherits cleanly
-  mainGroup.querySelectorAll('path, line, polyline').forEach((el) => {
+  mainGroup.setAttribute('fill', 'none')
+  mainGroup.removeAttribute('filter')
+  mainGroup.querySelectorAll('path, line, polyline, rect, polygon').forEach((el) => {
     el.removeAttribute('stroke')
     el.removeAttribute('stroke-width')
     el.removeAttribute('stroke-opacity')
     el.removeAttribute('stroke-linecap')
     el.removeAttribute('stroke-linejoin')
+    el.removeAttribute('fill')
   })
 
-  // Assemble: defs, bg, grid, shadow, main
-  // Remove all children except defs
+  // Assemble: defs, floor fill, grid, walls
   const children = [...svg.childNodes]
   for (const ch of children) {
     if (ch !== defs) svg.removeChild(ch)
   }
-  svg.appendChild(bg)
-  svg.appendChild(grid)
-  svg.appendChild(shadow)
+  svg.appendChild(floorFill)
+  svg.appendChild(gridRect)
   svg.appendChild(mainGroup)
 
   // Fix dimensions (aspect ratio preserved by ImageOverlay bounds matching SVG ratio)

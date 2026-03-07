@@ -477,59 +477,116 @@ function BoardingPassCard({ flight, formatTime }) {
   )
 }
 
+function parseTicketQR(text) {
+  try {
+    const data = JSON.parse(text)
+    if (data.type === 'skyguide_ticket' && data.flight_id) return data
+  } catch {}
+  const trimmed = text.trim()
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
+    return { flight_id: trimmed, flight_number: trimmed, type: 'skyguide_ticket' }
+  }
+  return null
+}
+
 function QRScannerModal({ onScan, onClose }) {
-  const scannerRef = useRef(null)
   const onScanRef = useRef(onScan)
   onScanRef.current = onScan
   const [error, setError] = useState(null)
-  const [manualId, setManualId] = useState('')
+  const [scanStatus, setScanStatus] = useState(null)
+  const [pastedImg, setPastedImg] = useState(null)
+  const containerRef = useRef(null)
+  const scannerRef = useRef(null)
 
+  // Clipboard paste: decode QR from pasted image
   useEffect(() => {
-    let running = false
-    let stopped = false
-    const scanner = new Html5Qrcode('qr-reader')
+    const handlePaste = async (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          const url = URL.createObjectURL(file)
+          setPastedImg(url)
+          setScanStatus('Image pasted, decoding...')
 
-    const startScanner = async () => {
-      try {
-        await scanner.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          (text) => {
-            if (stopped) return
-            try {
-              const data = JSON.parse(text)
-              if (data.type === 'skyguide_ticket' && data.flight_id) {
-                stopped = true
-                scanner.stop().then(() => { running = false }).catch(() => {})
-                onScanRef.current(data)
-              }
-            } catch {
-              // Not a valid SkyGuide QR
+          await new Promise((r) => setTimeout(r, 300))
+
+          try {
+            const tempId = 'paste-qr-' + Date.now()
+            const div = document.createElement('div')
+            div.id = tempId
+            div.style.display = 'none'
+            document.body.appendChild(div)
+            const tempScanner = new Html5Qrcode(tempId)
+            const text = await tempScanner.scanFileV2(file, false)
+            document.body.removeChild(div)
+
+            const ticket = parseTicketQR(text.decodedText)
+            if (ticket) {
+              try { scannerRef.current?.stop() } catch {}
+              onScanRef.current(ticket)
+              return
             }
-          },
-          () => {}
-        )
-        running = true
-      } catch {
-        setError('Camera access denied or unavailable')
+            setScanStatus('QR found but not a valid boarding pass')
+            setTimeout(() => { setScanStatus(null); setPastedImg(null) }, 2000)
+          } catch {
+            setScanStatus('No QR code found in image')
+            setTimeout(() => { setScanStatus(null); setPastedImg(null) }, 2000)
+          }
+          return
+        }
       }
     }
-
-    startScanner()
-
-    return () => {
-      stopped = true
-      if (running) {
-        scanner.stop().catch(() => {})
-      }
-    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
   }, [])
 
-  const handleManualAdd = () => {
-    if (manualId.trim()) {
-      onScan({ flight_id: manualId.trim(), flight_number: 'Manual', type: 'skyguide_ticket' })
+  // Camera scanner
+  useEffect(() => {
+    let active = true
+    const container = containerRef.current
+    if (!container) return
+
+    const id = 'iqr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
+    container.id = id
+    container.innerHTML = ''
+
+    const timeout = setTimeout(() => {
+      if (!active) return
+      const scanner = new Html5Qrcode(id)
+      scannerRef.current = scanner
+
+      scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (text) => {
+          if (!active) return
+          const ticket = parseTicketQR(text)
+          if (ticket) {
+            active = false
+            try { scanner.stop() } catch {}
+            onScanRef.current(ticket)
+            return
+          }
+          setScanStatus('Not a valid boarding pass QR')
+          setTimeout(() => setScanStatus(null), 2000)
+        },
+        () => {}
+      ).catch(() => {
+        if (active) setError('Camera access denied or unavailable')
+      })
+    }, 150)
+
+    return () => {
+      active = false
+      clearTimeout(timeout)
+      try { scannerRef.current?.stop() } catch {}
+      scannerRef.current = null
+      if (container) container.innerHTML = ''
     }
-  }
+  }, [])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -546,29 +603,20 @@ function QRScannerModal({ onScan, onClose }) {
           <p className="text-sm text-slate-400">Point camera at boarding pass QR code</p>
         </div>
 
-        <div className="rounded-xl overflow-hidden bg-black mb-4" style={{ minHeight: 280 }}>
-          <div id="qr-reader" ref={scannerRef} />
+        <div className="rounded-xl overflow-hidden bg-black mb-3" style={{ minHeight: 280 }}>
+          {pastedImg ? (
+            <img src={pastedImg} className="w-full h-auto" alt="Pasted QR" />
+          ) : (
+            <div ref={containerRef} />
+          )}
         </div>
 
+        {scanStatus && (
+          <p className="text-amber-400 text-xs text-center mb-2">{scanStatus}</p>
+        )}
+
         {error && (
-          <>
-            <p className="text-red-400 text-sm text-center mb-3">{error}</p>
-            <div className="space-y-2">
-              <p className="text-xs text-slate-500 text-center">Enter flight ID manually:</p>
-              <div className="flex gap-2">
-                <input
-                  value={manualId}
-                  onChange={(e) => setManualId(e.target.value)}
-                  placeholder="Flight ID"
-                  className="flex-1 px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-                />
-                <button onClick={handleManualAdd}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors">
-                  Add
-                </button>
-              </div>
-            </div>
-          </>
+          <p className="text-red-400 text-sm text-center">{error}</p>
         )}
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import Webcam from 'react-webcam'
 import { useFaceAPI } from '../../hooks/useFaceAPI'
 import { useStore } from '../../store'
@@ -8,8 +8,62 @@ export default function FaceEnroll({ onComplete }) {
   const webcamRef = useRef(null)
   const { loaded, captureDescriptor } = useFaceAPI()
   const { setBiometricId } = useStore()
-  const [status, setStatus] = useState('idle') // idle | capturing | success | error
+  const [status, setStatus] = useState('idle') // idle | capturing | pasted | success | error
   const [error, setError] = useState(null)
+  const [pastedImg, setPastedImg] = useState(null)
+  const pastedImgRef = useRef(null)
+
+  // Clipboard paste support
+  useEffect(() => {
+    const handlePaste = (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          const url = URL.createObjectURL(file)
+          setPastedImg(url)
+          setStatus('pasted')
+          // Auto-process after brief preview
+          setTimeout(() => {
+            const img = pastedImgRef.current
+            if (img) processImage(img)
+          }, 400)
+          return
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [loaded])
+
+  const processImage = useCallback(async (imgEl) => {
+    if (!loaded) return
+    setStatus('capturing')
+    setError(null)
+    try {
+      const result = await captureDescriptor(imgEl)
+      if (!result) {
+        setError('No face detected in pasted image.')
+        setStatus('error')
+        setPastedImg(null)
+        return
+      }
+      const { data } = await enrollFace({
+        face_descriptor: result.descriptor,
+        quality_score: result.score,
+        liveness_score: 0.9,
+      })
+      setBiometricId(data.biometric_id)
+      setStatus('success')
+      if (onComplete) onComplete(data)
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Enrollment failed')
+      setStatus('error')
+      setPastedImg(null)
+    }
+  }, [loaded, captureDescriptor, setBiometricId, onComplete])
 
   const handleCapture = useCallback(async () => {
     if (!webcamRef.current || !loaded) return
@@ -44,7 +98,10 @@ export default function FaceEnroll({ onComplete }) {
   return (
     <div className="flex flex-col items-center gap-4">
       <div className="relative rounded-2xl overflow-hidden border-2 border-slate-700 w-full max-w-sm aspect-[4/3]">
-        {status !== 'success' && (
+        {pastedImg && status !== 'success' ? (
+          <img ref={pastedImgRef} src={pastedImg} crossOrigin="anonymous"
+            className="w-full h-full object-cover" alt="Pasted face" />
+        ) : status !== 'success' ? (
           <Webcam
             ref={webcamRef}
             audio={false}
@@ -52,7 +109,7 @@ export default function FaceEnroll({ onComplete }) {
             videoConstraints={{ facingMode: 'user', width: 640, height: 480 }}
             className="w-full h-full object-cover"
           />
-        )}
+        ) : null}
         {status === 'success' && (
           <div className="w-full h-full bg-green-900/30 flex items-center justify-center">
             <div className="text-center">
@@ -63,12 +120,11 @@ export default function FaceEnroll({ onComplete }) {
             </div>
           </div>
         )}
-        {status === 'capturing' && (
+        {(status === 'capturing' || status === 'pasted') && (
           <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
             <div className="animate-spin w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full" />
           </div>
         )}
-        {/* Face guide overlay */}
         {status === 'idle' && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="w-48 h-56 border-2 border-dashed border-blue-400/50 rounded-full" />
@@ -85,15 +141,17 @@ export default function FaceEnroll({ onComplete }) {
       )}
 
       {status !== 'success' && (
-        <button
-          onClick={handleCapture}
-          disabled={!loaded || status === 'capturing'}
-          className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700
-                     disabled:text-slate-500 text-white rounded-xl font-medium
-                     transition-colors"
-        >
-          {status === 'capturing' ? 'Processing...' : 'Capture Face'}
-        </button>
+        <div className="flex flex-col items-center gap-2">
+          <button
+            onClick={handleCapture}
+            disabled={!loaded || status === 'capturing'}
+            className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700
+                       disabled:text-slate-500 text-white rounded-xl font-medium
+                       transition-colors"
+          >
+            {status === 'capturing' ? 'Processing...' : 'Capture Face'}
+          </button>
+        </div>
       )}
     </div>
   )

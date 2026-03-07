@@ -16,7 +16,6 @@ function MapController({ airport }) {
   useEffect(() => {
     if (!airport) return
     const bounds = [[0, 0], [airport.height_m, airport.width_m]]
-    map.setMaxBounds(bounds)
     map.fitBounds(bounds)
   }, [airport, map])
 
@@ -67,7 +66,7 @@ function computeFloorBounds(airport, svgDims) {
 }
 
 export default function FloorMap({ onMapClick, onSelectDestination, clientRoute, zoomToUserTrigger }) {
-  const { airport, floorSvgDims } = useStore()
+  const { airport, floorSvgDims, positionConfirmed } = useStore()
 
   const bounds = useMemo(() => {
     if (!airport) return [[0, 0], [200, 400]]
@@ -88,8 +87,7 @@ export default function FloorMap({ onMapClick, onSelectDestination, clientRoute,
     <MapContainer
       crs={L.CRS.Simple}
       bounds={bounds}
-      maxBounds={bounds}
-      maxBoundsViscosity={1.0}
+
       zoomSnap={0.25}
       zoomDelta={0.5}
       minZoom={-2}
@@ -101,7 +99,7 @@ export default function FloorMap({ onMapClick, onSelectDestination, clientRoute,
       <MapController airport={airport} />
       <MapClickHandler onMapClick={onMapClick} />
       <ZoomToUser trigger={zoomToUserTrigger} />
-      <BlueDot />
+      {positionConfirmed && <BlueDot />}
 
       <RoutePolyline clientRoute={clientRoute} />
       <POIMarkers onSelectDestination={onSelectDestination} />

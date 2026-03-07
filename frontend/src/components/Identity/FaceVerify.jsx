@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import Webcam from 'react-webcam'
 import { useFaceAPI } from '../../hooks/useFaceAPI'
 import { useStore } from '../../store'
@@ -11,6 +11,64 @@ export default function FaceVerify({ touchpointId, onResult }) {
   const [status, setStatus] = useState('idle')
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [pastedImg, setPastedImg] = useState(null)
+  const pastedImgRef = useRef(null)
+
+  // Clipboard paste support
+  useEffect(() => {
+    const handlePaste = (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          const url = URL.createObjectURL(file)
+          setPastedImg(url)
+          setStatus('pasted')
+          setTimeout(() => {
+            const img = pastedImgRef.current
+            if (img) processFromImage(img)
+          }, 400)
+          return
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [loaded, user])
+
+  const processFromImage = useCallback(async (imgEl) => {
+    if (!loaded || !user) return
+    setStatus('verifying')
+    setError(null)
+    try {
+      const live = await captureDescriptor(imgEl)
+      if (!live) {
+        setError('No face detected in pasted image.')
+        setStatus('error')
+        setPastedImg(null)
+        return
+      }
+      const { data: stored } = await getFaceDescriptor(user.id || user.user_id)
+      const match = matchDescriptor(stored.face_descriptor, live.descriptor)
+      if (verificationToken?.token && touchpointId) {
+        const { data: verifyResult } = await verifyAtTouchpoint(touchpointId, {
+          token_jwt: verificationToken.token,
+          match_score: match.distance,
+        })
+        setResult({ ...match, outcome: verifyResult.outcome, claims: verifyResult.claims })
+      } else {
+        setResult(match)
+      }
+      setStatus('done')
+      if (onResult) onResult({ ...match })
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Verification failed')
+      setStatus('error')
+      setPastedImg(null)
+    }
+  }, [loaded, user, verificationToken, touchpointId, captureDescriptor, matchDescriptor, onResult])
 
   const handleVerify = useCallback(async () => {
     if (!webcamRef.current || !loaded || !user) return
@@ -59,13 +117,18 @@ export default function FaceVerify({ touchpointId, onResult }) {
   return (
     <div className="flex flex-col items-center gap-4">
       <div className="relative rounded-2xl overflow-hidden border-2 border-slate-700 w-full max-w-sm aspect-[4/3]">
-        <Webcam
-          ref={webcamRef}
-          audio={false}
-          videoConstraints={{ facingMode: 'user', width: 640, height: 480 }}
-          className="w-full h-full object-cover"
-        />
-        {status === 'verifying' && (
+        {pastedImg ? (
+          <img ref={pastedImgRef} src={pastedImg} crossOrigin="anonymous"
+            className="w-full h-full object-cover" alt="Pasted face" />
+        ) : (
+          <Webcam
+            ref={webcamRef}
+            audio={false}
+            videoConstraints={{ facingMode: 'user', width: 640, height: 480 }}
+            className="w-full h-full object-cover"
+          />
+        )}
+        {(status === 'verifying' || status === 'pasted') && (
           <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
             <div className="animate-spin w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full" />
           </div>
@@ -92,14 +155,16 @@ export default function FaceVerify({ touchpointId, onResult }) {
 
       {error && <p className="text-red-400 text-sm">{error}</p>}
 
-      <button
-        onClick={handleVerify}
-        disabled={!loaded || status === 'verifying'}
-        className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700
-                   text-white rounded-xl font-medium transition-colors"
-      >
-        {status === 'verifying' ? 'Verifying...' : 'Verify Identity'}
-      </button>
+      <div className="flex flex-col items-center gap-2">
+        <button
+          onClick={handleVerify}
+          disabled={!loaded || status === 'verifying'}
+          className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700
+                     text-white rounded-xl font-medium transition-colors"
+        >
+          {status === 'verifying' ? 'Verifying...' : 'Verify Identity'}
+        </button>
+      </div>
     </div>
   )
 }

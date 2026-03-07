@@ -250,41 +250,98 @@ function clientAStar(fromPos, toPoi, pois, airport, walls) {
   return null
 }
 
+// ── Parse position QR helper ──────────────────────────────────────
+function parsePositionQR(text) {
+  try {
+    const data = JSON.parse(text)
+    if (data.type === 'skyguide_position' && data.x_m != null && data.y_m != null) return data
+  } catch {}
+  return null
+}
+
 // ── QR Scanner Modal for position scanning ───────────────────────
 function PositionQRScanner({ onScanned, onClose }) {
   const readerRef = useRef(null)
   const [error, setError] = useState(null)
+  const [pastedImg, setPastedImg] = useState(null)
   const onScanRef = useRef(onScanned)
   onScanRef.current = onScanned
 
+  // Camera scanner
   useEffect(() => {
-    let stopped = false
+    let active = true
     const container = readerRef.current
     if (!container) return
     const scannerId = 'pos-qr-reader-' + Date.now()
     container.id = scannerId
+    container.innerHTML = ''
     const scanner = new Html5Qrcode(scannerId)
-    let running = false
 
-    scanner.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 250, height: 250 } },
-      (text) => {
-        try {
-          const data = JSON.parse(text)
-          if (data.type === 'skyguide_position' && data.x_m != null && data.y_m != null) {
+    const timer = setTimeout(() => {
+      if (!active) return
+      scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (text) => {
+          if (!active) return
+          const data = parsePositionQR(text)
+          if (data) {
+            active = false
+            try { scanner.stop() } catch {}
             onScanRef.current(data)
           }
-        } catch {}
-      },
-      () => {}
-    ).then(() => { running = true })
-      .catch(() => { if (!stopped) setError('Camera access denied') })
+        },
+        () => {}
+      ).catch(() => { if (active) setError('Camera access denied') })
+    }, 150)
 
     return () => {
-      stopped = true
-      if (running) scanner.stop().catch(() => {})
+      active = false
+      clearTimeout(timer)
+      try { scanner.stop() } catch {}
+      container.innerHTML = ''
     }
+  }, [])
+
+  // Clipboard paste support
+  useEffect(() => {
+    const handlePaste = async (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          const url = URL.createObjectURL(file)
+          setPastedImg(url)
+          setTimeout(async () => {
+            try {
+              const tmpId = 'pos-paste-' + Date.now()
+              const div = document.createElement('div')
+              div.id = tmpId
+              div.style.display = 'none'
+              document.body.appendChild(div)
+              const tmp = new Html5Qrcode(tmpId)
+              const result = await tmp.scanFileV2(file, false)
+              document.body.removeChild(div)
+              const data = parsePositionQR(result.decodedText)
+              if (data) {
+                onScanRef.current(data)
+              } else {
+                setError('No position QR found in image')
+                setPastedImg(null)
+              }
+            } catch {
+              setError('Could not read QR from pasted image')
+              setPastedImg(null)
+            }
+          }, 300)
+          return
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
   }, [])
 
   return (
@@ -297,9 +354,17 @@ function PositionQRScanner({ onScanned, onClose }) {
           </svg>
         </button>
         <p className="text-sm font-semibold text-white mb-3">Scan Position QR Code</p>
-        <div ref={readerRef} className="rounded-xl overflow-hidden" style={{ minHeight: 280 }} />
+        {pastedImg ? (
+          <div className="rounded-xl overflow-hidden" style={{ minHeight: 280 }}>
+            <img src={pastedImg} className="w-full h-full object-contain" alt="Pasted QR" />
+            <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+              <div className="animate-spin w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full" />
+            </div>
+          </div>
+        ) : (
+          <div ref={readerRef} className="rounded-xl overflow-hidden" style={{ minHeight: 280 }} />
+        )}
         {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
-        <p className="text-[10px] text-slate-500 mt-3">Point camera at a position QR marker</p>
       </div>
     </div>
   )
@@ -475,14 +540,10 @@ export default function MapPage() {
     return () => clearInterval(id)
   }, [permissionGranted, heading, positionConfirmed])
 
-  // Show initial position modal on entry if not yet confirmed
+  // Request IMU permission early (no modal on entry — only when navigating)
   useEffect(() => {
-    if (!loading && !positionConfirmed) {
-      setPositionMode('modal')
-      // Try requesting IMU permission early
-      requestPermission()
-    }
-  }, [loading, positionConfirmed, requestPermission])
+    if (!loading) requestPermission()
+  }, [loading, requestPermission])
 
   useEffect(() => {
     const loadAirport = async () => {
@@ -565,20 +626,18 @@ export default function MapPage() {
     }
   }, [airport, navGraph, pois, accessProfile, setRoute, setSession])
 
-  // Navigate here on a POI
+  // Navigate here on a POI — ask for position only if not yet confirmed this session
   const handleSelectDestination = useCallback((poiId) => {
     const destPoi = pois.find((p) => (p.poi_id || p.id) === poiId)
     if (!destPoi) return
 
-    if (positionConfirmed) {
-      // Position already set — navigate directly
+    if (useStore.getState().positionConfirmed) {
       startNavigation(useStore.getState().position, poiId)
     } else {
-      // Need position first
       setPendingDest(destPoi)
       setPositionMode('modal')
     }
-  }, [pois, positionConfirmed, startNavigation])
+  }, [pois, startNavigation])
 
   // Position is set (from map click or QR scan)
   const handlePositionSet = useCallback((x_m, y_m, source = 'manual_set') => {
@@ -641,11 +700,9 @@ export default function MapPage() {
       setPositionMode('modal')
     },
     () => {
-      // Tap: zoom to user
+      // Tap: zoom to user if position is known
       if (positionConfirmed) {
         setZoomTrigger((t) => t + 1)
-      } else {
-        setPositionMode('modal')
       }
     },
     500

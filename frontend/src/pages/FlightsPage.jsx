@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Html5Qrcode } from 'html5-qrcode'
 import { useStore } from '../store'
-import { getFlights, getMyFlights } from '../api/client'
+import { getFlights, getMyFlights, subscribeFlight } from '../api/client'
 import BottomNav from '../components/BottomNav'
 
 const STATUS_COLORS = {
@@ -36,6 +37,8 @@ export default function FlightsPage() {
   const [apiFlights, setApiFlights] = useState([])
   const [myFlights, setMyFlights] = useState([])
   const [loading, setLoading] = useState(true)
+  const [showScanner, setShowScanner] = useState(false)
+  const [scanResult, setScanResult] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -62,6 +65,19 @@ export default function FlightsPage() {
     const interval = setInterval(load, 5000)
     return () => { cancelled = true; clearInterval(interval) }
   }, [direction, accessToken])
+
+  const handleScanSuccess = async (flightData) => {
+    try {
+      await subscribeFlight(flightData.flight_id)
+      const { data } = await getMyFlights()
+      setMyFlights(data || [])
+      setScanResult({ ok: true, flight: flightData.flight_number || flightData.flight_id })
+    } catch (err) {
+      console.error('subscribeFlight failed:', err)
+      setScanResult({ ok: false, message: 'Failed to add flight' })
+    }
+    setShowScanner(false)
+  }
 
   const allFlights = apiFlights
 
@@ -116,6 +132,37 @@ export default function FlightsPage() {
                        focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/50"
           />
         </div>
+      </div>
+
+      {/* Scan Result Toast */}
+      {scanResult && (
+        <div className={`mx-5 mb-3 px-4 py-3 rounded-xl text-sm flex items-center justify-between ${
+          scanResult.ok
+            ? 'bg-green-500/10 border border-green-500/20 text-green-400'
+            : 'bg-red-500/10 border border-red-500/20 text-red-400'
+        }`}>
+          <span>{scanResult.ok ? `Added ${scanResult.flight} to My Flights` : scanResult.message}</span>
+          <button onClick={() => setScanResult(null)} className="hover:text-white ml-2">&times;</button>
+        </div>
+      )}
+
+      {/* Scan Button */}
+      <div className="px-5 mb-4">
+        <button
+          onClick={() => setShowScanner(true)}
+          className="w-full flex items-center gap-3 p-3.5 bg-blue-600/10 border border-blue-500/25 rounded-xl hover:bg-blue-600/20 transition-colors"
+        >
+          <div className="w-10 h-10 bg-blue-500/20 rounded-lg flex items-center justify-center">
+            <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+            </svg>
+          </div>
+          <div className="flex-1 text-left">
+            <p className="text-sm font-semibold text-blue-400">Scan Boarding Pass</p>
+            <p className="text-xs text-slate-500">Add a flight by scanning its QR code</p>
+          </div>
+        </button>
       </div>
 
       {/* Tabs */}
@@ -182,13 +229,169 @@ export default function FlightsPage() {
               key={flight.id || flight.flight_number}
               flight={flight}
               showAddButton={activeTab === 'all'}
-              onAdd={() => navigate('/identity', { state: { openScanner: true } })}
+              onAdd={() => setShowScanner(true)}
             />
           ))
         )}
       </div>
 
+      {showScanner && (
+        <TicketScannerModal
+          onScan={handleScanSuccess}
+          onClose={() => setShowScanner(false)}
+        />
+      )}
+
       <BottomNav />
+    </div>
+  )
+}
+
+// Process decoded QR text for ticket data
+function parseTicketQR(text) {
+  try {
+    const data = JSON.parse(text)
+    if (data.type === 'skyguide_ticket' && data.flight_id) return data
+  } catch { /* not JSON */ }
+  const trimmed = text.trim()
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
+    return { flight_id: trimmed, flight_number: trimmed, type: 'skyguide_ticket' }
+  }
+  return null
+}
+
+function TicketScannerModal({ onScan, onClose }) {
+  const onScanRef = useRef(onScan)
+  onScanRef.current = onScan
+  const [error, setError] = useState(null)
+  const [scanStatus, setScanStatus] = useState(null)
+  const [pastedImg, setPastedImg] = useState(null)
+  const containerRef = useRef(null)
+  const scannerRef = useRef(null)
+
+  // Clipboard paste: decode QR from pasted image
+  useEffect(() => {
+    const handlePaste = async (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          const url = URL.createObjectURL(file)
+          setPastedImg(url)
+          setScanStatus('Image pasted, decoding...')
+
+          // Brief preview delay then decode
+          await new Promise((r) => setTimeout(r, 300))
+
+          try {
+            // Decode QR from pasted image using a temporary scanner
+            const tempId = 'paste-qr-' + Date.now()
+            const div = document.createElement('div')
+            div.id = tempId
+            div.style.display = 'none'
+            document.body.appendChild(div)
+            const tempScanner = new Html5Qrcode(tempId)
+            const text = await tempScanner.scanFileV2(file, false)
+            document.body.removeChild(div)
+
+            const ticket = parseTicketQR(text.decodedText)
+            if (ticket) {
+              try { scannerRef.current?.stop() } catch {}
+              onScanRef.current(ticket)
+              return
+            }
+            setScanStatus('QR found but not a valid boarding pass')
+            setTimeout(() => { setScanStatus(null); setPastedImg(null) }, 2000)
+          } catch {
+            setScanStatus('No QR code found in image')
+            setTimeout(() => { setScanStatus(null); setPastedImg(null) }, 2000)
+          }
+          return
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [])
+
+  // Camera scanner
+  useEffect(() => {
+    let active = true
+    const container = containerRef.current
+    if (!container) return
+
+    const id = 'tqr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
+    container.id = id
+    container.innerHTML = ''
+
+    const timeout = setTimeout(() => {
+      if (!active) return
+      const scanner = new Html5Qrcode(id)
+      scannerRef.current = scanner
+
+      scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (text) => {
+          if (!active) return
+          const ticket = parseTicketQR(text)
+          if (ticket) {
+            active = false
+            try { scanner.stop() } catch {}
+            onScanRef.current(ticket)
+            return
+          }
+          setScanStatus('Not a valid boarding pass QR')
+          setTimeout(() => setScanStatus(null), 2000)
+        },
+        () => {}
+      ).catch(() => {
+        if (active) setError('Camera access denied or unavailable')
+      })
+    }, 150)
+
+    return () => {
+      active = false
+      clearTimeout(timeout)
+      try { scannerRef.current?.stop() } catch {}
+      scannerRef.current = null
+      if (container) container.innerHTML = ''
+    }
+  }, [])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/90" onClick={onClose} />
+      <div className="relative bg-slate-800 rounded-2xl w-full max-w-sm mx-4 p-5 border border-slate-700">
+        <button onClick={onClose} className="absolute top-3 right-3 text-slate-500 hover:text-white z-10">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <div className="text-center mb-4">
+          <h3 className="text-lg font-bold text-white mb-1">Scan Boarding Pass</h3>
+          <p className="text-sm text-slate-400">Point camera at the ticket QR code</p>
+        </div>
+
+        <div className="rounded-xl overflow-hidden bg-black mb-3" style={{ minHeight: 280 }}>
+          {pastedImg ? (
+            <img src={pastedImg} className="w-full h-auto" alt="Pasted QR" />
+          ) : (
+            <div ref={containerRef} />
+          )}
+        </div>
+
+        {scanStatus && (
+          <p className="text-amber-400 text-xs text-center mb-2">{scanStatus}</p>
+        )}
+
+        {error && (
+          <p className="text-red-400 text-sm text-center">{error}</p>
+        )}
+      </div>
     </div>
   )
 }

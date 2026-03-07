@@ -297,6 +297,11 @@ function AirportTab() {
   const [addForm, setAddForm] = useState({ name: '', category_id: 1, gate_number: '' })
   const fileRef = useRef(null)
 
+  // Calibration modal state
+  const [calibrationFile, setCalibrationFile] = useState(null)
+  const [calibrationAspect, setCalibrationAspect] = useState(null) // w/h
+  const [calibrationHeight, setCalibrationHeight] = useState('')
+
   // Position markers state
   const [markers, setMarkers] = useState([])
   const [markerAddMode, setMarkerAddMode] = useState(false)
@@ -335,17 +340,50 @@ function AirportTab() {
     { id: 16, slug: 'exit' },
   ]
 
-  const handleUpload = async (e) => {
+  const handleFileSelect = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    // Read SVG to get aspect ratio
+    try {
+      const text = await file.text()
+      const doc = new DOMParser().parseFromString(text, 'image/svg+xml')
+      const svg = doc.documentElement
+      const vb = svg.getAttribute('viewBox')
+      let w = 800, h = 800
+      if (vb) {
+        const parts = vb.split(/[\s,]+/).map(Number)
+        w = parts[2] || 800
+        h = parts[3] || 800
+      } else {
+        w = parseFloat(svg.getAttribute('width')) || 800
+        h = parseFloat(svg.getAttribute('height')) || 800
+      }
+      setCalibrationAspect(w / h)
+    } catch {
+      setCalibrationAspect(1)
+    }
+    setCalibrationFile(file)
+    setCalibrationHeight('')
+    // Reset file input so the same file can be re-selected
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  const handleCalibrationSubmit = async () => {
+    const heightM = parseFloat(calibrationHeight)
+    if (!calibrationFile || !heightM || heightM <= 0) return
+    const widthM = Math.round(heightM * calibrationAspect)
     setUploading(true)
+    setCalibrationFile(null)
     try {
       const form = new FormData()
-      form.append('file', file)
-      const { data } = await api.post('/admin/upload-map', form, {
+      form.append('file', calibrationFile)
+      await api.post('/admin/upload-map', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
-      // Reload airport to get new floor_plan_url
+      await api.post('/admin/upload-map/dimensions', {
+        width_m: widthM,
+        height_m: heightM,
+      })
       const { data: airports } = await getAirports()
       if (airports?.[0]) setAirport(airports[0])
     } catch (err) {
@@ -414,7 +452,7 @@ function AirportTab() {
       {/* Map Upload */}
       <div className="flex items-center gap-3">
         <h3 className="text-xs font-bold text-slate-400 tracking-widest uppercase">Floor Plan</h3>
-        <input ref={fileRef} type="file" accept="image/*,.svg" onChange={handleUpload} className="hidden" />
+        <input ref={fileRef} type="file" accept="image/*,.svg" onChange={handleFileSelect} className="hidden" />
         <button
           onClick={() => fileRef.current?.click()}
           disabled={uploading}
@@ -423,7 +461,64 @@ function AirportTab() {
           {uploading ? 'Uploading...' : 'Upload Map'}
         </button>
         <span className="text-xs text-slate-600 truncate max-w-xs">{rawFloorPlanUrl}</span>
+        {airport && (
+          <span className="text-[10px] text-slate-500">{airport.width_m}m &times; {airport.height_m}m</span>
+        )}
       </div>
+
+      {/* Calibration Modal */}
+      {calibrationFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/80" onClick={() => setCalibrationFile(null)} />
+          <div className="relative bg-slate-800 rounded-2xl w-full max-w-sm mx-4 p-5 border border-slate-700">
+            <button onClick={() => setCalibrationFile(null)} className="absolute top-3 right-3 text-slate-500 hover:text-white">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+
+            <h3 className="text-base font-bold text-white mb-1">Calibrate Floor Plan</h3>
+            <p className="text-xs text-slate-400 mb-4">
+              Enter the real-world height (north-to-south distance) of the floor plan. Width will be calculated from the SVG aspect ratio.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1">Height (metres)</label>
+                <input
+                  type="number"
+                  value={calibrationHeight}
+                  onChange={(e) => setCalibrationHeight(e.target.value)}
+                  placeholder="e.g. 200"
+                  min="1"
+                  autoFocus
+                  className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                  onKeyDown={(e) => e.key === 'Enter' && handleCalibrationSubmit()}
+                />
+              </div>
+
+              {calibrationHeight && parseFloat(calibrationHeight) > 0 && (
+                <div className="bg-slate-700/30 rounded-lg px-3 py-2 text-xs text-slate-400">
+                  Computed size: <span className="text-white font-medium">{Math.round(parseFloat(calibrationHeight) * calibrationAspect)}m</span> &times; <span className="text-white font-medium">{parseFloat(calibrationHeight)}m</span>
+                  <span className="text-slate-500 ml-1">(W &times; H)</span>
+                </div>
+              )}
+
+              <button
+                onClick={handleCalibrationSubmit}
+                disabled={!calibrationHeight || parseFloat(calibrationHeight) <= 0}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                Upload &amp; Calibrate
+              </button>
+            </div>
+
+            <p className="text-[10px] text-slate-600 mt-3 text-center">
+              SVG aspect ratio: {calibrationAspect?.toFixed(2)} (W:H)
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Add POI form */}
       <div className="flex flex-wrap items-end gap-2">
