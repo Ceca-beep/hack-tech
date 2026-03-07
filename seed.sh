@@ -49,4 +49,4 @@ log "Seeding database with schema_v3.sql..."
 cd "$BACKEND_DIR"
 python seed.py
 
-log "Done! Demo credentials: demo_user / hackathon2024"
+log "Done! Demo credentials: demo / hackathon2024"
