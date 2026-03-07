@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo } from 'react'
 import { MapContainer, ImageOverlay, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import { useStore } from '../../store'
@@ -36,33 +36,6 @@ function MapClickHandler({ onMapClick }) {
 }
 
 // Debug: draw parsed walls as red lines to verify coordinate alignment
-function WallDebugOverlay() {
-  const map = useMap()
-  const layerRef = useRef(null)
-  const { floorWalls, airport, floorSvgDims } = useStore()
-
-  useEffect(() => {
-    layerRef.current?.remove()
-    if (!floorWalls?.length || !airport) return
-
-    const fb = computeFloorBounds(airport, floorSvgDims)
-    const group = L.layerGroup()
-    for (const w of floorWalls) {
-      // Walls are in normalized 0..1 coords — convert to fitted image bounds
-      const y1 = fb.y0 + w.y1 * fb.h, x1 = fb.x0 + w.x1 * fb.w
-      const y2 = fb.y0 + w.y2 * fb.h, x2 = fb.x0 + w.x2 * fb.w
-      L.polyline([[y1, x1], [y2, x2]], {
-        color: 'red', weight: 2, opacity: 0.6, interactive: false,
-      }).addTo(group)
-    }
-    group.addTo(map)
-    layerRef.current = group
-
-    return () => { group.remove() }
-  }, [floorWalls, airport, floorSvgDims, map])
-
-  return null
-}
 
 function ZoomToUser({ trigger }) {
   const map = useMap()
@@ -129,7 +102,7 @@ export default function FloorMap({ onMapClick, onSelectDestination, clientRoute,
       <MapClickHandler onMapClick={onMapClick} />
       <ZoomToUser trigger={zoomToUserTrigger} />
       <BlueDot />
-      <WallDebugOverlay />
+
       <RoutePolyline clientRoute={clientRoute} />
       <POIMarkers onSelectDestination={onSelectDestination} />
     </MapContainer>
