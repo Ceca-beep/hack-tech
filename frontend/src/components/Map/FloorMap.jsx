@@ -55,7 +55,7 @@ export default function FloorMap({ onMapClick, onSelectDestination }) {
       minZoom={-2}
       maxZoom={4}
       attributionControl={false}
-      style={{ width: '100%', height: '100%', background: '#0f172a' }}
+      style={{ width: '100%', height: '100%', background: '#0b1120' }}
     >
       <ImageOverlay url={floorPlanUrl} bounds={bounds} opacity={0.9} />
       <MapController airport={airport} />

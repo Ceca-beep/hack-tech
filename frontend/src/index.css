@@ -8,17 +8,22 @@ html, body, #root {
 
 /* Leaflet overrides for dark theme */
 .leaflet-container {
-  background: #1e293b;
+  background: #0b1120;
 }
 
 .leaflet-popup-content-wrapper {
   background: #1e293b;
   color: #e2e8f0;
-  border-radius: 8px;
+  border-radius: 12px;
 }
 
 .leaflet-popup-tip {
   background: #1e293b;
+}
+
+/* Hide default leaflet zoom controls (we use custom ones) */
+.leaflet-control-zoom {
+  display: none !important;
 }
 
 /* Pulsing blue dot animation */
@@ -42,12 +47,53 @@ html, body, #root {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 4px;
 }
 ::-webkit-scrollbar-track {
-  background: #1e293b;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #475569;
-  border-radius: 3px;
+  background: #334155;
+  border-radius: 2px;
+}
+
+/* Custom range slider styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #334155;
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+  border: 2px solid #0b1120;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+  border: 2px solid #0b1120;
+}
+
+/* Smooth page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 200ms ease, transform 200ms ease;
 }

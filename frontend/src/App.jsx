@@ -3,8 +3,10 @@ import { useStore } from './store'
 import { usePushNotifications } from './hooks/usePushNotifications'
 import LoginPage from './pages/LoginPage'
 import MapPage from './pages/MapPage'
+import FlightsPage from './pages/FlightsPage'
 import ARPage from './pages/ARPage'
 import IdentityPage from './pages/IdentityPage'
+import ProfilePage from './pages/ProfilePage'
 import DemoPage from './pages/DemoPage'
 
 function AuthGuard({ children }) {
@@ -34,6 +36,14 @@ export default function App() {
           }
         />
         <Route
+          path="/flights"
+          element={
+            <AuthGuard>
+              <FlightsPage />
+            </AuthGuard>
+          }
+        />
+        <Route
           path="/ar"
           element={
             <AuthGuard>
@@ -46,6 +56,14 @@ export default function App() {
           element={
             <AuthGuard>
               <IdentityPage />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <AuthGuard>
+              <ProfilePage />
             </AuthGuard>
           }
         />

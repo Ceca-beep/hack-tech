@@ -45,20 +45,18 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-full flex items-center justify-center p-4 bg-slate-900">
+    <div className="min-h-full flex items-center justify-center p-4 bg-[#0b1120]">
       <div className="w-full max-w-sm">
         {/* Logo/Title */}
         <div className="text-center mb-8">
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center
-                          justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                          justify-center mx-auto mb-4 shadow-lg shadow-blue-600/20">
+            <svg className="w-8 h-8 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M21 16v-2l-8-5V3.5a1.5 1.5 0 00-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-white">Airport Companion</h1>
+          <h1 className="text-2xl font-bold text-white">SkyGuide</h1>
           <p className="text-slate-400 text-sm mt-1">Indoor navigation & digital identity</p>
         </div>
 
@@ -71,9 +69,9 @@ export default function LoginPage() {
               onChange={handleChange}
               placeholder="Username"
               required
-              className="w-full px-4 py-3 bg-slate-800 border border-slate-700
-                         rounded-xl text-white placeholder-slate-400
-                         focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              className="w-full px-4 py-3 bg-slate-800/60 border border-slate-700/50
+                         rounded-xl text-white placeholder-slate-500
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/50"
             />
           </div>
           <div>
@@ -84,9 +82,9 @@ export default function LoginPage() {
               onChange={handleChange}
               placeholder="Password"
               required
-              className="w-full px-4 py-3 bg-slate-800 border border-slate-700
-                         rounded-xl text-white placeholder-slate-400
-                         focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              className="w-full px-4 py-3 bg-slate-800/60 border border-slate-700/50
+                         rounded-xl text-white placeholder-slate-500
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/50"
             />
           </div>
 
@@ -98,9 +96,9 @@ export default function LoginPage() {
                   value={form.display_name}
                   onChange={handleChange}
                   placeholder="Display Name"
-                  className="w-full px-4 py-3 bg-slate-800 border border-slate-700
-                             rounded-xl text-white placeholder-slate-400
-                             focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  className="w-full px-4 py-3 bg-slate-800/60 border border-slate-700/50
+                             rounded-xl text-white placeholder-slate-500
+                             focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/50"
                 />
               </div>
               <div>
@@ -110,9 +108,9 @@ export default function LoginPage() {
                   onChange={handleChange}
                   placeholder="Nationality Code (e.g. GB)"
                   maxLength={2}
-                  className="w-full px-4 py-3 bg-slate-800 border border-slate-700
-                             rounded-xl text-white placeholder-slate-400
-                             focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  className="w-full px-4 py-3 bg-slate-800/60 border border-slate-700/50
+                             rounded-xl text-white placeholder-slate-500
+                             focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/50"
                 />
               </div>
             </>
@@ -126,7 +124,8 @@ export default function LoginPage() {
             type="submit"
             disabled={loading}
             className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700
-                       text-white rounded-xl font-medium transition-colors"
+                       text-white rounded-xl font-medium transition-colors
+                       shadow-lg shadow-blue-600/20"
           >
             {loading ? 'Please wait...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
@@ -142,7 +141,7 @@ export default function LoginPage() {
         </div>
 
         {/* Quick demo login hint */}
-        <div className="mt-6 p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+        <div className="mt-6 p-3 bg-slate-800/30 rounded-xl border border-slate-700/30">
           <p className="text-xs text-slate-500 text-center">
             Demo: username <span className="text-slate-400 font-mono">demo</span> / password{' '}
             <span className="text-slate-400 font-mono">hackathon2024</span>
