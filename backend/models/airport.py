@@ -1,8 +1,11 @@
 import uuid
 
+from datetime import datetime, timezone
+
 from sqlalchemy import (
     Boolean,
     Column,
+    DateTime,
     Float,
     ForeignKey,
     Integer,
@@ -87,7 +90,7 @@ class Poi(Base):
     haptic_cue = Column(Text)
     operating_hours = Column(JSONB)
     is_active = Column(Boolean, nullable=False, default=True)
-    updated_at = Column(Text)  # handled by DB default
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     airport = relationship("Airport", back_populates="pois")
     category = relationship("PoiCategory")

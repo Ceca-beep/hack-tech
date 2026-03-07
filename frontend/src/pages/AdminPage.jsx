@@ -296,6 +296,25 @@ function AirportTab() {
   const [addForm, setAddForm] = useState({ name: '', category_id: 1, gate_number: '' })
   const fileRef = useRef(null)
 
+  // Load airport + POIs on mount if not already in store
+  useEffect(() => {
+    const load = async () => {
+      try {
+        let ap = airport
+        if (!ap) {
+          const { data: airports } = await getAirports()
+          ap = airports?.[0]
+          if (ap) setAirport(ap)
+        }
+        if (ap) {
+          const { data } = await getAirportPOIs(ap.id)
+          setPois(data || [])
+        }
+      } catch {}
+    }
+    load()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const CATEGORIES = [
     { id: 1, slug: 'gate' }, { id: 2, slug: 'checkin' }, { id: 3, slug: 'security' },
     { id: 4, slug: 'passport' }, { id: 5, slug: 'baggage' }, { id: 6, slug: 'restroom' },
