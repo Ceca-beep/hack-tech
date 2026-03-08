@@ -1,14 +1,16 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Html5Qrcode } from 'html5-qrcode'
 import { useStore } from '../store'
 import {
   getAirports, getAirportPOIs, getNavGraph, getRoute,
-  createSession,
+  createSession, getMyFlights,
 } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useIMU } from '../hooks/useIMU'
 import FloorMap from '../components/Map/FloorMap'
 import InstructionBanner from '../components/Navigation/InstructionBanner'
+import FlightCTABanner from '../components/Navigation/FlightCTABanner'
+import JourneyProgress from '../components/Navigation/JourneyProgress'
 import BottomNav from '../components/BottomNav'
 
 // ── Line-segment intersection test (handles collinear overlap) ───
@@ -87,6 +89,39 @@ function computeFloorBounds(airport, svgDims) {
   }
   const imgW = H * svgAspect
   return { x0: (W - imgW) / 2, y0: 0, w: imgW, h: H }
+}
+
+// ── Journey planner: order mandatory POIs for departure ──────────
+function planJourney(flight, position, pois) {
+  const plan = []
+  const nearest = (pos, list) => {
+    let best = list[0], bestDist = Infinity
+    for (const p of list) {
+      const dx = (p.x_m || 0) - pos.x_m, dy = (p.y_m || 0) - pos.y_m
+      const d = dx * dx + dy * dy
+      if (d < bestDist) { bestDist = d; best = p }
+    }
+    return best
+  }
+
+  // Check-in
+  const checkins = pois.filter((p) => p.category === 'checkin')
+  if (checkins.length) plan.push(nearest(position, checkins))
+
+  // Security
+  const securities = pois.filter((p) => p.category === 'security')
+  if (securities.length) plan.push(nearest(position, securities))
+
+  // Passport control (optional)
+  const passports = pois.filter((p) => p.category === 'passport')
+  if (passports.length) plan.push(nearest(position, passports))
+
+  // Gate — match by gate_poi_id or gate number
+  const gatePoi = pois.find((p) => (p.poi_id || p.id) === flight.gate_poi_id)
+    || pois.find((p) => p.category === 'gate' && p.gate_number === flight.gate)
+  if (gatePoi) plan.push(gatePoi)
+
+  return plan
 }
 
 // ── Grid-based A* pathfinding (wall-aware) ───────────────────────
@@ -490,6 +525,11 @@ export default function MapPage() {
   const [zoomDelta, setZoomDelta] = useState(0) // +1 or -1 to zoom in/out
   const mapRef = useRef(null)
 
+  // Journey state
+  const { journeyPlan, journeyStepIndex, journeyFlight, setJourneyPlan, advanceJourneyStep, clearJourney } = useStore()
+  const [myFlights, setMyFlights] = useState([])
+  const journeyArrivalRef = useRef(false)
+
   // Set default position to bottom-center of the SVG floor plan
   const floorSvgDims = useStore((s) => s.floorSvgDims)
   const floorWalls = useStore((s) => s.floorWalls)
@@ -590,6 +630,74 @@ export default function MapPage() {
     }
     loadAirport()
   }, [setAirport, setPois, setNavGraph])
+
+  // Fetch user's flights for CTA banner
+  useEffect(() => {
+    const load = () => getMyFlights()
+      .then(({ data }) => setMyFlights(data || []))
+      .catch(() => {})
+    load()
+    const interval = setInterval(load, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Find approaching departure flight (within 2 hours)
+  const approachingFlight = useMemo(() => {
+    const now = Date.now()
+    return myFlights
+      .filter((f) => {
+        if (f.direction && f.direction !== 'departure') return false
+        const dep = new Date(f.estimated_at || f.scheduled_at).getTime()
+        return dep > now && dep - now <= 2 * 60 * 60 * 1000
+      })
+      .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at))[0] || null
+  }, [myFlights])
+
+  // Begin journey handler
+  const handleBeginJourney = useCallback((flight) => {
+    const pos = useStore.getState().position
+    const plan = planJourney(flight, pos, pois)
+    if (!plan.length) return
+    setJourneyPlan(plan, flight)
+    // Start navigating to first waypoint
+    const firstPoi = plan[0]
+    startNavigation(pos, firstPoi.poi_id || firstPoi.id)
+  }, [pois, setJourneyPlan, startNavigation])
+
+  // Arrival detection for journey mode
+  useEffect(() => {
+    if (!journeyPlan || !route) return
+    const currentDest = journeyPlan[journeyStepIndex]
+    if (!currentDest) return
+
+    const pos = useStore.getState().position
+    const dx = pos.x_m - (currentDest.x_m || 0)
+    const dy = pos.y_m - (currentDest.y_m || 0)
+    const dist = Math.sqrt(dx * dx + dy * dy)
+
+    if (dist < 8 && !journeyArrivalRef.current) {
+      journeyArrivalRef.current = true
+      const nextIndex = journeyStepIndex + 1
+      if (nextIndex < journeyPlan.length) {
+        // Advance to next step after brief pause
+        setTimeout(() => {
+          advanceJourneyStep()
+          setRoute(null)
+          const nextPoi = journeyPlan[nextIndex]
+          const currentPos = useStore.getState().position
+          startNavigation(currentPos, nextPoi.poi_id || nextPoi.id)
+          journeyArrivalRef.current = false
+        }, 1500)
+      } else {
+        // Journey complete!
+        setTimeout(() => {
+          setRoute(null)
+          clearJourney()
+          journeyArrivalRef.current = false
+        }, 1000)
+      }
+    }
+  }, [position, journeyPlan, journeyStepIndex, route, advanceJourneyStep, clearJourney, setRoute, startNavigation])
 
   // Start navigation after position is confirmed
   const startNavigation = useCallback(async (fromPos, destPoiId) => {
@@ -715,6 +823,7 @@ export default function MapPage() {
     setPendingDest(null)
     setPositionMode(null)
     setSettingPosition(false)
+    clearJourney()
   }
 
   // Navigation button: tap = zoom to user, hold = reopen position modal
@@ -874,12 +983,25 @@ export default function MapPage() {
         </button>
       </div>
 
+      {/* Journey Progress (above nav card) */}
+      {journeyPlan && (
+        <div className="absolute bottom-44 left-4 right-4 z-[1000]">
+          <div className="bg-slate-800/90 backdrop-blur-md rounded-xl border border-slate-700/30 px-3 py-2.5 shadow-xl">
+            <JourneyProgress plan={journeyPlan} currentIndex={journeyStepIndex} />
+          </div>
+        </div>
+      )}
+
       {/* Next Step Card */}
       {route && currentInstruction && (
         <div className="absolute bottom-24 left-4 right-4 z-[1000]">
           <div className="bg-slate-800/95 backdrop-blur-md rounded-2xl border border-slate-700/30 px-4 py-3 shadow-xl">
             <div className="flex items-center justify-between mb-1">
-              <p className="text-[10px] text-slate-500 font-semibold tracking-widest uppercase">Next Step</p>
+              <p className="text-[10px] text-slate-500 font-semibold tracking-widest uppercase">
+                {journeyPlan
+                  ? `Step ${journeyStepIndex + 1}/${journeyPlan.length} — ${journeyPlan[journeyStepIndex]?.name || 'Next'}`
+                  : 'Next Step'}
+              </p>
               <button onClick={handleCancelNavigation}
                 className="text-[10px] text-red-400 hover:text-red-300 font-medium">
                 End Nav
@@ -905,6 +1027,11 @@ export default function MapPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Flight approaching CTA */}
+      {approachingFlight && !route && !journeyPlan && !settingPosition && positionConfirmed && (
+        <FlightCTABanner flight={approachingFlight} onConfirm={handleBeginJourney} />
       )}
 
       {/* Instruction Banner (fallback) */}

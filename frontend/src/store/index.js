@@ -57,6 +57,18 @@ export const useStore = create(
       },
       setAccessProfile: (p) => set({ accessProfile: p }),
 
+      // Onboarding
+      onboardingComplete: false,
+      setOnboardingComplete: (v) => set({ onboardingComplete: v }),
+
+      // Journey (auto-navigation through mandatory POIs)
+      journeyPlan: null,    // [{poi_id, name, category, x_m, y_m}, ...]
+      journeyStepIndex: 0,
+      journeyFlight: null,  // the flight being journeyed to
+      setJourneyPlan: (plan, flight) => set({ journeyPlan: plan, journeyStepIndex: 0, journeyFlight: flight }),
+      advanceJourneyStep: () => set((s) => ({ journeyStepIndex: s.journeyStepIndex + 1 })),
+      clearJourney: () => set({ journeyPlan: null, journeyStepIndex: 0, journeyFlight: null }),
+
       // Demo
       isReplaying: false,
       setReplaying: (v) => set({ isReplaying: v }),
@@ -74,6 +86,7 @@ export const useStore = create(
         biometricId: state.biometricId,
         documentId: state.documentId,
         accessProfile: state.accessProfile,
+        onboardingComplete: state.onboardingComplete,
       }),
     }
   )
