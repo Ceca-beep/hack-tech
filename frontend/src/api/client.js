@@ -9,6 +9,14 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+api.interceptors.response.use(undefined, (error) => {
+  if (error.response?.status === 401) {
+    useStore.getState().logout()
+    window.location.replace('/login')
+  }
+  return Promise.reject(error)
+})
+
 export const login             = (u, p)       => api.post('/auth/login', { username: u, password: p })
 export const register          = (data)        => api.post('/auth/register', data)
 export const getAirports       = ()            => api.get('/airports')
