@@ -839,7 +839,7 @@ function NotifyTab({ flights }) {
     setSending(true)
     try {
       const { data } = await api.post('/admin/notify', notifForm)
-      setResult(`Notification queued to ${data.queued} subscriber(s)`)
+      setResult(`Notification sent to ${data.sent}/${data.subscribers} subscriber(s)`)
       setNotifForm({ title: '', body: '', priority: 'normal' })
     } catch { setResult('Failed to send') }
     finally { setSending(false) }
@@ -849,7 +849,7 @@ function NotifyTab({ flights }) {
     setSending(true)
     try {
       const { data } = await api.post('/admin/announce', { message: announceText })
-      setResult(`PA sent to ${data.queued} subscriber(s)`)
+      setResult(`PA sent to ${data.sent}/${data.subscribers} subscriber(s)`)
       setAnnounceText('')
     } catch { setResult('Failed') }
     finally { setSending(false) }
