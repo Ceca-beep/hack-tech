@@ -92,6 +92,7 @@ async def _notify(db, title: str, body: str, priority: str = "normal", payload: 
             body=body,
             priority=priority,
             payload=payload or {},
+            dedup_key=str(uuid.uuid4()),
         ))
 
 
