@@ -25,17 +25,18 @@
   <img src="assets/identity.jpeg" height="600" width="300" />
 </p>
 
-> ### The app allows you to send an alert even if there is no signal; once the connection is restored, the ping is uploaded to the map
-
-<p style="flex-direction:row;">
-  <img src="assets/offline_p1.jpeg" height="660" width="300" />
-  <img src="assets/offline_p2.jpeg" height="660" width="300" />
-</p>
-
 ## Profile page
-> ### You can edit your profile or add new information to it
+
+> ### Manage your account and accessibility preferences — toggle and customize haptic feedback intensity or voice navigation to match your needs.
 
 <p style="flex-direction:row;">
   <img src="assets/profile.jpeg" height="660" width="300" />
-  <img src="assets/profileupd.jpeg" height="660" width="300" />
+</p>
+
+## Map
+> ### Searchable indoor airport map with real-time turn-by-turn navigation, displaying the route, next step instructions, and estimated travel time.
+
+<p style="flex-direction:row;">
+  <img src="assets/map.jpeg" height="660" width="300" />
+  <img src="assets/map2.jpeg" height="660" width="300" />
 </p>
