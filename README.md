@@ -11,7 +11,6 @@ An intelligent airport navigation and accessibility platform that helps traveler
 - **Digital Identity & Tickets** — Per-session identity verification gates access to the ticket section. Add and view flight tickets; identity tokens are generated per verified session.
 - **Accessibility** — Haptic feedback (configurable intensity), text-to-speech navigation cues, voice control, and per-user accessibility profiles.
 - **Flight Tracking** — Simulated real-time flight status updates with subscription-based push notifications (Web Push / VAPID).
-- **Session Replay** — Record navigation sessions and replay them for testing or analytics.
 
 ---
 
@@ -94,25 +93,6 @@ An intelligent airport navigation and accessibility platform that helps traveler
 git clone <repo-url>
 cd hack-tech-1
 ```
-
-### 2. Configure environment variables
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` and fill in the required values:
-
-| Variable | Description |
-|---|---|
-| `DATABASE_URL` | PostgreSQL connection string — `postgresql+asyncpg://postgres:postgres@localhost:5432/airport_companion` |
-| `SECRET_KEY` | At least 32 characters, used for JWT signing |
-| `ENCRYPTION_KEY` | 64-character hex string for AES-256-GCM encryption |
-| `JWT_EXPIRE_HOURS` | Token lifetime in hours (default: `12`) |
-| `VAPID_PUBLIC_KEY` | Web Push public key (generate with pywebpush) |
-| `VAPID_PRIVATE_KEY` | Web Push private key |
-| `VAPID_CONTACT_EMAIL` | Contact email for push notification provider |
-| `CORS_ORIGINS` | Allowed CORS origins (default: `localhost:5173,localhost:443`) |
 
 ### 3. Start the database and seed demo data
 
